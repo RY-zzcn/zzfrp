@@ -249,7 +249,47 @@ FRPS_BINARY_PATH="${FRP_INSTALL_DIR}/frps"
 install_or_update_frps() {
   echo -e "${C_SUB_MENU_TITLE}--- 安装/更新 frps (服务端) ---${C_RESET}"
   get_latest_frp_version
-  download_and_extract_frp "$LATEST_FRP_VERSION" "$FRP_ARCH" "frps"
+  local latest_version_no_v="${LATEST_FRP_VERSION#v}" # 去掉 'v' 前缀
+
+  if [ -f "$FRPS_BINARY_PATH" ]; then
+    local local_version=$("$FRPS_BINARY_PATH" --version 2>/dev/null)
+    if [ -n "$local_version" ]; then
+      info "当前已安装 frps 版本: ${C_LIGHT_WHITE}${local_version}${C_RESET}"
+      if [ "$local_version" == "$latest_version_no_v" ]; then
+        info "您已安装最新版本的 frps (${C_LIGHT_WHITE}${local_version}${C_RESET})。"
+        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要重新安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
+        if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
+          info "取消重新安装。"
+          return
+        fi
+      elif [[ "$local_version" > "$latest_version_no_v" ]]; then # 简单字符串比较，可能不完全准确，但对于frp版本格式通常有效
+        warn "当前安装版本 (${C_LIGHT_WHITE}${local_version}${C_RESET}) 高于 GitHub 最新版 (${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET})。可能使用了测试版或自定义版本。"
+        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用 GitHub 最新版覆盖安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
+        if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
+          info "取消覆盖安装。"
+          return
+        fi
+      else
+         info "检测到新版本 frps: ${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET} (当前: ${local_version})。准备更新..."
+      fi
+    else
+      warn "无法获取当前 frps 版本信息，将尝试更新。"
+    fi
+  fi
+
+  # 在复制新文件前，尝试停止正在运行的 frps 服务
+  if systemctl is-active --quiet "$FRPS_SERVICE_NAME"; then
+    info "检测到 frps 服务正在运行，正在尝试停止它以便更新..."
+    _manage_service "stop" "$FRPS_SERVICE_NAME" "frps"
+    sleep 2 # 等待服务停止
+    if systemctl is-active --quiet "$FRPS_SERVICE_NAME"; then
+        warn "停止 frps 服务失败。更新可能会失败。如果遇到问题，请手动停止服务 (sudo systemctl stop ${FRPS_SERVICE_NAME}) 后重试。"
+    else
+        info "frps 服务已停止。"
+    fi
+  fi
+  
+  download_and_extract_frp "$LATEST_FRP_VERSION" "$FRP_ARCH" "frps" # 下载和解压移到这里
 
   echo -e "${C_MSG_ACTION_TEXT}⚙️ 正在安装 frps 到 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_MSG_ACTION_TEXT}...${C_RESET}"
   sudo mkdir -p "$FRP_INSTALL_DIR"
@@ -279,10 +319,10 @@ bind_port = ${frps_bind_port}
 dashboard_port = ${frps_dashboard_port}
 dashboard_user = ${frps_dashboard_user}
 dashboard_pwd = ${frps_dashboard_pwd}
-# token = YOUR_VERY_SECRET_TOKEN # 建议取消注释并设置强Token
-# log_file = /var/log/frps.log # 日志文件路径
-# log_level = info # 日志级别: trace, debug, info, warn, error
-# log_max_days = 3 # 日志保留天数
+# token = YOUR_VERY_SECRET_TOKEN 
+# log_file = /var/log/frps.log 
+# log_level = info 
+# log_max_days = 3 
 EOF
     echo -e "${C_MSG_SUCCESS_TEXT}✅ frps 配置文件已根据您的输入创建。${C_RESET}"
   else
@@ -411,6 +451,60 @@ FRPC_SYSTEMD_TEMPLATE_FILE="/etc/systemd/system/frpc@.service"
 install_or_update_frpc_binary() {
   echo -e "${C_SUB_MENU_TITLE}--- 安装/更新 frpc 客户端二进制文件 ---${C_RESET}"
   get_latest_frp_version
+  local latest_version_no_v="${LATEST_FRP_VERSION#v}"
+
+  if [ -f "$FRPC_BINARY_PATH" ]; then
+    local local_version=$("$FRPC_BINARY_PATH" --version 2>/dev/null)
+    if [ -n "$local_version" ]; then
+      info "当前已安装 frpc 版本: ${C_LIGHT_WHITE}${local_version}${C_RESET}"
+      if [ "$local_version" == "$latest_version_no_v" ]; then
+        info "您已安装最新版本的 frpc (${C_LIGHT_WHITE}${local_version}${C_RESET})。"
+        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要重新安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
+        if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
+          info "取消重新安装。"
+          return
+        fi
+      elif [[ "$local_version" > "$latest_version_no_v" ]]; then
+        warn "当前安装版本 (${C_LIGHT_WHITE}${local_version}${C_RESET}) 高于 GitHub 最新版 (${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET})。可能使用了测试版或自定义版本。"
+        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用 GitHub 最新版覆盖安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
+        if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
+          info "取消覆盖安装。"
+          return
+        fi
+      else
+        info "检测到新版本 frpc: ${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET} (当前: ${local_version})。准备更新..."
+      fi
+    else
+      warn "无法获取当前 frpc 版本信息，将尝试更新。"
+    fi
+  fi
+
+  # 在复制新文件前，尝试停止所有正在运行的 frpc 实例服务
+  if [ -d "$FRPC_CLIENTS_DIR" ] && [ -n "$(ls -A ${FRPC_CLIENTS_DIR}/*.ini 2>/dev/null)" ]; then
+    info "检测到 frpc 实例配置，正在尝试停止相关服务以便更新 frpc 二进制文件..."
+    local instance_stopped_count=0
+    local instance_total_count=$(ls -1qA ${FRPC_CLIENTS_DIR}/*.ini 2>/dev/null | wc -l)
+    for conf_file_loop in ${FRPC_CLIENTS_DIR}/*.ini; do
+        local instance_name_loop=$(basename "$conf_file_loop" .ini)
+        local service_name_loop="frpc@${instance_name_loop}.service"
+        if systemctl is-active --quiet "$service_name_loop"; then
+            _manage_service "stop" "$service_name_loop" "frpc 实例 [${instance_name_loop}]"
+            if ! systemctl is-active --quiet "$service_name_loop"; then
+                instance_stopped_count=$((instance_stopped_count + 1))
+            fi
+        else
+            instance_stopped_count=$((instance_stopped_count + 1)) # Already stopped or not found
+        fi
+    done
+    if [ "$instance_stopped_count" -lt "$instance_total_count" ]; then
+        warn "并非所有 frpc 实例服务都已成功停止。更新 frpc 二进制文件可能会失败或导致问题。"
+        warn "如果遇到问题，请手动停止所有 frpc@<instance_name>.service 服务后重试。"
+    else
+        info "所有检测到的 frpc 实例服务已停止或处于非活动状态。"
+    fi
+    sleep 1 
+  fi
+  
   download_and_extract_frp "$LATEST_FRP_VERSION" "$FRP_ARCH" "frpc"
 
   echo -e "${C_MSG_ACTION_TEXT}⚙️ 正在安装 frpc 二进制文件到 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_MSG_ACTION_TEXT}...${C_RESET}"
@@ -423,6 +517,7 @@ install_or_update_frpc_binary() {
   if [ -f "${FRPC_BINARY_PATH}" ]; then
     echo -e "${C_MSG_SUCCESS_TEXT}✅ frpc 二进制文件已成功安装到 ${C_PATH_INFO}${FRPC_BINARY_PATH}${C_RESET}"
     "${FRPC_BINARY_PATH}" --version
+    info "请注意：如果之前有正在运行的 frpc 实例，您可能需要手动启动它们，或通过'管理指定frpc实例'菜单启动。"
   else
     error "frpc 二进制文件安装失败。"
   fi
@@ -771,28 +866,24 @@ show_all_frp_services_status() {
 }
 
 setup_zzfrp_shortcut_if_needed() {
-    # 如果 stdin 是一个管道 (例如 curl ... | sudo bash)，则不尝试设置快捷方式
     if [ -p /dev/stdin ]; then
         info "脚本正通过管道执行 (例如: curl ... | sudo bash)。"
         warn "在此模式下，无法自动设置 '${C_BOLD}zzfrp${C_RESET}' 快捷指令。"
         info "要启用快捷指令，请先将脚本下载到本地文件 (例如 zzfrp.sh)，"
         info "然后通过 '${C_BOLD}sudo ./zzfrp.sh${C_RESET}' 运行它，脚本会自动尝试设置快捷方式。"
-        press_enter_to_continue
         return
     fi
 
-    # 仅当不是管道输入且标记文件不存在时，才继续
     if [ -f "$SHORTCUT_SETUP_FLAG_FILE" ]; then
-        return # 已经尝试过或已设置
+        return 
     fi
     
-    # 确保 FRP_INSTALL_DIR 存在，用于存放标记文件
     if ! sudo mkdir -p "$FRP_INSTALL_DIR"; then
         warn "无法创建目录 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_RESET}，快捷指令设置的标记文件可能无法创建。"
     fi
 
     local current_script_path
-    current_script_path=$(readlink -f "$0") # 在非管道模式下，$0 是可靠的
+    current_script_path=$(readlink -f "$0") 
 
     echo -e "${C_MSG_ACTION_TEXT}正在检查/设置快捷指令 '${C_BOLD}zzfrp${C_RESET}${C_MSG_ACTION_TEXT}'...${C_RESET}"
     if [ -f "$ZZFRP_COMMAND_PATH" ] && [ "$(readlink -f "$ZZFRP_COMMAND_PATH")" != "$current_script_path" ]; then
@@ -817,7 +908,6 @@ setup_zzfrp_shortcut_if_needed() {
         fi
     fi
     
-    # 创建标记文件，表示已尝试设置 (仅在非管道模式下)
     if sudo touch "$SHORTCUT_SETUP_FLAG_FILE"; then
         info "已标记快捷指令设置尝试完成。"
     else
@@ -832,17 +922,14 @@ main_menu() {
   setup_zzfrp_shortcut_if_needed
 
   local shortcut_hint=""
-  # 仅当脚本不是从管道运行时，才检查并显示快捷方式提示
   if ! [ -p /dev/stdin ] && command -v zzfrp &>/dev/null && [ -x "$ZZFRP_COMMAND_PATH" ]; then
       local resolved_zzfrp_path
       resolved_zzfrp_path=$(readlink -f "$(command -v zzfrp)")
-      # local current_script_abs_path # $0 在这里仍然是脚本文件路径
-      # current_script_abs_path=$(readlink -f "$0")
-
-      # 快捷方式提示的条件：zzfrp 命令存在，并且它就是我们预期的 ZZFRP_COMMAND_PATH
-      # 或者 zzfrp 命令存在，并且它就是当前运行的脚本文件本身（这种情况较少，除非用户直接把脚本命名为zzfrp并放在PATH中）
-      if [ "$resolved_zzfrp_path" == "$ZZFRP_COMMAND_PATH" ]; then
+      local current_script_real_path=$(readlink -f "$0")
+      if [ "$resolved_zzfrp_path" == "$ZZFRP_COMMAND_PATH" ] && [ "$ZZFRP_COMMAND_PATH" == "$current_script_real_path" ]; then
           shortcut_hint="  快捷启动: ${C_BOLD}sudo zzfrp${C_RESET}"
+      elif [ "$resolved_zzfrp_path" == "$current_script_real_path" ]; then 
+           shortcut_hint="  快捷启动: ${C_BOLD}sudo zzfrp${C_RESET}"
       fi
   fi
   
