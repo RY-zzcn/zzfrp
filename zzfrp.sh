@@ -9,6 +9,7 @@ FRP_ARCH="amd64" # 默认架构
 LATEST_FRP_VERSION="" # 将会获取
 ZZFRP_COMMAND_PATH="/usr/local/bin/zzfrp" # 快捷指令路径
 SHORTCUT_SETUP_FLAG_FILE="${FRP_INSTALL_DIR}/.zzfrp_shortcut_setup_done" # 标记文件，表示已尝试设置快捷方式
+SCRIPT_REPO_URL="https://github.com/RY-zzcn/zzfrp" # 脚本仓库地址
 
 # --- Color Definitions ---
 C_RESET='\033[0m'
@@ -318,7 +319,6 @@ EOF
   fi
   _manage_service "restart" "$FRPS_SERVICE_NAME" "frps"
   
-  # 从实际配置文件中读取 dashboard_port 以显示正确的提示
   local current_dashboard_port=$(grep -E "^\s*dashboard_port\s*=" "${FRPS_CONFIG_FILE}" 2>/dev/null | cut -d '=' -f2 | tr -d ' ' || echo "未配置或读取失败")
   echo -e "${C_MSG_INFO_TEXT}👉 frps 配置文件位置: ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_RESET}"
   if [[ "$current_dashboard_port" != "未配置或读取失败" ]]; then
@@ -825,10 +825,11 @@ main_menu() {
   while true; do
     clear
     echo -e "${C_MAIN_TITLE}\n========== zzfrp 管理脚本 by:RY-zzcn ==========${C_RESET}" 
-    echo -e "${C_WHITE}  frp版本：by:fatedier (原始作者)${C_RESET}"
+    echo -e "${C_WHITE}  frp版本：by:fatedier (frp作者)${C_RESET}"
     if [ -n "$shortcut_hint" ]; then
         echo -e "${C_HINT_TEXT}${shortcut_hint}${C_RESET}"
     fi
+    echo -e "${C_WHITE}  脚本地址: ${C_UNDERLINE}${C_BLUE}${SCRIPT_REPO_URL}${C_RESET}" # 新增脚本地址显示
     echo -e "${C_WHITE}  FRP 安装目录: ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_RESET}"
     echo -e "${C_WHITE}  frpc 实例配置: ${C_PATH_INFO}${FRPC_CLIENTS_DIR}${C_RESET}"
     echo -e "${C_SEPARATOR}----------------------------------------------${C_RESET}"
