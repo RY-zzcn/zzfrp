@@ -40,11 +40,11 @@
 
 * **使用 `curl`**:
     ```bash
-    curl -sSL [https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh](https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh) | sudo bash
+    curl -sSL https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh | sudo bash
     ```
 * **使用 `wget`**:
     ```bash
-    wget -qO- [https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh](https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh) | sudo bash
+    wget -qO- https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh | sudo bash
     ```
 
     之后，如果快捷命令设置成功，您可以直接使用 `sudo zzfrp` 启动脚本。
@@ -53,9 +53,9 @@
 
 1.  **下载脚本**:
     ```bash
-    wget [https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh](https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh)
+    wget https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh
     # 或者使用 curl:
-    # curl -O [https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh](https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh)
+    # curl -O https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh
     ```
 2.  **给予执行权限**:
     ```bash
