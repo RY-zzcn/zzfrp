@@ -771,38 +771,59 @@ show_all_frp_services_status() {
 }
 
 setup_zzfrp_shortcut_if_needed() {
-    local current_script_path
-    current_script_path=$(readlink -f "$0")
-
-    if ! sudo mkdir -p "$FRP_INSTALL_DIR"; then
-        warn "无法创建目录 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_RESET}，快捷指令设置可能受影响。"
-    fi
-
-    if [ ! -f "$SHORTCUT_SETUP_FLAG_FILE" ]; then
-        echo -e "${C_MSG_ACTION_TEXT}正在检查/设置快捷指令 '${C_BOLD}zzfrp${C_RESET}${C_MSG_ACTION_TEXT}'...${C_RESET}"
-        if [ -f "$ZZFRP_COMMAND_PATH" ] && [ "$(readlink -f "$ZZFRP_COMMAND_PATH")" != "$current_script_path" ]; then
-            warn "检测到 ${C_PATH_INFO}${ZZFRP_COMMAND_PATH}${C_RESET} 已存在且指向其他程序。"
-            warn "自动设置快捷指令 '${C_BOLD}zzfrp${C_RESET}' 失败。您可以手动将其链接到: ${C_PATH_INFO}${current_script_path}${C_RESET}"
-        else
-            if ! command -v zzfrp >/dev/null || [ "$(readlink -f "$(command -v zzfrp)")" != "$current_script_path" ]; then
-                echo -e "${C_MSG_ACTION_TEXT}正在尝试将当前脚本复制到 ${C_PATH_INFO}${ZZFRP_COMMAND_PATH}${C_MSG_ACTION_TEXT}...${C_RESET}"
-                if sudo cp "$current_script_path" "$ZZFRP_COMMAND_PATH" && sudo chmod +x "$ZZFRP_COMMAND_PATH"; then
-                    echo -e "${C_MSG_SUCCESS_TEXT}✅ 快捷指令 '${C_BOLD}zzfrp${C_RESET}${C_MSG_SUCCESS_TEXT}' 已成功设置为指向当前脚本。${C_RESET}"
-                    info "下次可直接使用 '${C_BOLD}sudo zzfrp${C_RESET}' 运行此脚本。"
-                else
-                    warn "设置快捷指令 '${C_BOLD}zzfrp${C_RESET}' 到 ${C_PATH_INFO}${ZZFRP_COMMAND_PATH}${C_RESET} 失败。请检查权限或手动设置。"
-                fi
-            elif command -v zzfrp >/dev/null && [ "$(readlink -f "$(command -v zzfrp)")" == "$current_script_path" ]; then
-                 info "快捷指令 '${C_BOLD}zzfrp${C_RESET}' 已正确配置为指向当前脚本。"
-            fi
-        fi
-        if sudo touch "$SHORTCUT_SETUP_FLAG_FILE"; then
-            info "已标记快捷指令设置尝试完成。"
-        else
-            warn "无法创建标记文件 ${C_PATH_INFO}${SHORTCUT_SETUP_FLAG_FILE}${C_RESET}。"
-        fi
+    # 如果 stdin 是一个管道 (例如 curl ... | sudo bash)，则不尝试设置快捷方式
+    if [ -p /dev/stdin ]; then
+        info "脚本正通过管道执行 (例如: curl ... | sudo bash)。"
+        warn "在此模式下，无法自动设置 '${C_BOLD}zzfrp${C_RESET}' 快捷指令。"
+        info "要启用快捷指令，请先将脚本下载到本地文件 (例如 zzfrp.sh)，"
+        info "然后通过 '${C_BOLD}sudo ./zzfrp.sh${C_RESET}' 运行它，脚本会自动尝试设置快捷方式。"
         press_enter_to_continue
+        return
     fi
+
+    # 仅当不是管道输入且标记文件不存在时，才继续
+    if [ -f "$SHORTCUT_SETUP_FLAG_FILE" ]; then
+        return # 已经尝试过或已设置
+    fi
+    
+    # 确保 FRP_INSTALL_DIR 存在，用于存放标记文件
+    if ! sudo mkdir -p "$FRP_INSTALL_DIR"; then
+        warn "无法创建目录 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_RESET}，快捷指令设置的标记文件可能无法创建。"
+    fi
+
+    local current_script_path
+    current_script_path=$(readlink -f "$0") # 在非管道模式下，$0 是可靠的
+
+    echo -e "${C_MSG_ACTION_TEXT}正在检查/设置快捷指令 '${C_BOLD}zzfrp${C_RESET}${C_MSG_ACTION_TEXT}'...${C_RESET}"
+    if [ -f "$ZZFRP_COMMAND_PATH" ] && [ "$(readlink -f "$ZZFRP_COMMAND_PATH")" != "$current_script_path" ]; then
+        warn "检测到 ${C_PATH_INFO}${ZZFRP_COMMAND_PATH}${C_RESET} 已存在且指向其他程序。"
+        warn "自动设置快捷指令 '${C_BOLD}zzfrp${C_RESET}' 失败。您可以手动将其链接到: ${C_PATH_INFO}${current_script_path}${C_RESET}"
+    else
+        local existing_zzfrp_path=""
+        if command -v zzfrp >/dev/null; then
+            existing_zzfrp_path=$(readlink -f "$(command -v zzfrp)")
+        fi
+
+        if [ "$existing_zzfrp_path" != "$current_script_path" ]; then
+            echo -e "${C_MSG_ACTION_TEXT}正在尝试将当前脚本复制到 ${C_PATH_INFO}${ZZFRP_COMMAND_PATH}${C_MSG_ACTION_TEXT}...${C_RESET}"
+            if sudo cp "$current_script_path" "$ZZFRP_COMMAND_PATH" && sudo chmod +x "$ZZFRP_COMMAND_PATH"; then
+                echo -e "${C_MSG_SUCCESS_TEXT}✅ 快捷指令 '${C_BOLD}zzfrp${C_RESET}${C_MSG_SUCCESS_TEXT}' 已成功设置为指向当前脚本。${C_RESET}"
+                info "下次可直接使用 '${C_BOLD}sudo zzfrp${C_RESET}' 运行此脚本。"
+            else
+                warn "设置快捷指令 '${C_BOLD}zzfrp${C_RESET}' 到 ${C_PATH_INFO}${ZZFRP_COMMAND_PATH}${C_RESET} 失败。请检查权限或手动设置。"
+            fi
+        else
+             info "快捷指令 '${C_BOLD}zzfrp${C_RESET}' 已正确配置为指向当前脚本。"
+        fi
+    fi
+    
+    # 创建标记文件，表示已尝试设置 (仅在非管道模式下)
+    if sudo touch "$SHORTCUT_SETUP_FLAG_FILE"; then
+        info "已标记快捷指令设置尝试完成。"
+    else
+        warn "无法创建标记文件 ${C_PATH_INFO}${SHORTCUT_SETUP_FLAG_FILE}${C_RESET}。"
+    fi
+    press_enter_to_continue
 }
 
 main_menu() {
@@ -811,13 +832,16 @@ main_menu() {
   setup_zzfrp_shortcut_if_needed
 
   local shortcut_hint=""
-  if command -v zzfrp &>/dev/null && [ -x "$ZZFRP_COMMAND_PATH" ]; then
+  # 仅当脚本不是从管道运行时，才检查并显示快捷方式提示
+  if ! [ -p /dev/stdin ] && command -v zzfrp &>/dev/null && [ -x "$ZZFRP_COMMAND_PATH" ]; then
       local resolved_zzfrp_path
       resolved_zzfrp_path=$(readlink -f "$(command -v zzfrp)")
-      local current_script_abs_path
-      current_script_abs_path=$(readlink -f "$0")
+      # local current_script_abs_path # $0 在这里仍然是脚本文件路径
+      # current_script_abs_path=$(readlink -f "$0")
 
-      if [ "$resolved_zzfrp_path" == "$current_script_abs_path" ] || [ "$resolved_zzfrp_path" == "$ZZFRP_COMMAND_PATH" ]; then
+      # 快捷方式提示的条件：zzfrp 命令存在，并且它就是我们预期的 ZZFRP_COMMAND_PATH
+      # 或者 zzfrp 命令存在，并且它就是当前运行的脚本文件本身（这种情况较少，除非用户直接把脚本命名为zzfrp并放在PATH中）
+      if [ "$resolved_zzfrp_path" == "$ZZFRP_COMMAND_PATH" ]; then
           shortcut_hint="  快捷启动: ${C_BOLD}sudo zzfrp${C_RESET}"
       fi
   fi
@@ -829,7 +853,7 @@ main_menu() {
     if [ -n "$shortcut_hint" ]; then
         echo -e "${C_HINT_TEXT}${shortcut_hint}${C_RESET}"
     fi
-    echo -e "${C_WHITE}  脚本地址: ${C_UNDERLINE}${C_BLUE}${SCRIPT_REPO_URL}${C_RESET}" # 新增脚本地址显示
+    echo -e "${C_WHITE}  脚本地址: ${C_UNDERLINE}${C_BLUE}${SCRIPT_REPO_URL}${C_RESET}"
     echo -e "${C_WHITE}  FRP 安装目录: ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_RESET}"
     echo -e "${C_WHITE}  frpc 实例配置: ${C_PATH_INFO}${FRPC_CLIENTS_DIR}${C_RESET}"
     echo -e "${C_SEPARATOR}----------------------------------------------${C_RESET}"
