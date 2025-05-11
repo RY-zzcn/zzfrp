@@ -2,7 +2,7 @@
 
 这是一个便捷的 Bash 脚本，用于在 Linux 系统上安装、更新、管理和卸载 `frps` (服务端) 和 `frpc` (客户端) 服务，并支持对多个 `frpc` 客户端实例进行独立管理。
 
-** frp 版本作者：fatedier** ([fatedier/frp](https://github.com/fatedier/frp))
+**frp 版本作者：fatedier** ([fatedier/frp](https://github.com/fatedier/frp))
 **本脚本作者：RY-zzcn**
 **脚本仓库地址：[https://github.com/RY-zzcn/zzfrp](https://github.com/RY-zzcn/zzfrp)**
 
@@ -40,11 +40,11 @@
 
 * **使用 `curl`**:
     ```bash
-    curl -sSL https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh | sudo bash
+    curl -fsSL https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh -o zzfrp.sh && chmod +x zzfrp.sh && sudo ./zzfrp.sh
     ```
 * **使用 `wget`**:
     ```bash
-    wget -qO- https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh | sudo bash
+    wget -q https://raw.githubusercontent.com/RY-zzcn/zzfrp/main/zzfrp.sh -O zzfrp.sh && chmod +x zzfrp.sh && sudo ./zzfrp.sh
     ```
 
     之后，如果快捷命令设置成功，您可以直接使用 `sudo zzfrp` 启动脚本。
