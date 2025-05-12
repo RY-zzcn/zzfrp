@@ -85,8 +85,8 @@ check_tools() {
     ["tar"]="tar"
     ["nano"]="nano"
     ["readlink"]="coreutils" 
-    ["grep"]="grep" # grep for parsing firewall status
-    ["awk"]="gawk"  # awk for parsing firewall status, gawk is a common provider
+    ["grep"]="grep" 
+    ["awk"]="gawk"  
   )
 
   local pmg="" 
@@ -255,7 +255,6 @@ _manage_service() {
     esac
 }
 
-# --- IP 和防火墙检查函数 ---
 get_public_ip() {
     echo -e "${C_MSG_ACTION_TEXT}正在尝试获取公网IP地址...${C_RESET}"
     local ip
@@ -266,23 +265,22 @@ get_public_ip() {
     
     if [ -n "$ip" ]; then
         echo -e "${C_MSG_SUCCESS_TEXT}检测到公网IP: ${C_LIGHT_WHITE}${ip}${C_RESET}"
-        echo "$ip" # 返回IP供调用者使用
+        echo "$ip" 
     else
         warn "无法自动获取公网IP地址。请手动确认。"
-        echo "未知" # 返回未知
+        echo "未知" 
     fi
 }
 
 check_firewall_rule_for_port() {
     local port=$1
-    local protocol=${2:-tcp} # 默认为tcp
+    local protocol=${2:-tcp} 
     local port_allowed=false
     local firewall_checked="none"
 
     echo -e "${C_MSG_ACTION_TEXT}正在检查防火墙规则 (端口 ${C_BOLD}${port}/${protocol}${C_RESET})...${C_RESET}"
     echo -e "${C_HINT_TEXT}(这仅为基础检查，可能无法覆盖所有防火墙配置或云安全组规则)${C_RESET}"
 
-    # 检查 UFW
     if command -v ufw &> /dev/null && sudo ufw status | grep -qw "Status: active"; then
         firewall_checked="ufw"
         if sudo ufw status verbose | grep -qw "${port}/${protocol}" | grep -qwi "ALLOW"; then
@@ -293,13 +291,11 @@ check_firewall_rule_for_port() {
         fi
     fi
 
-    # 检查 Firewalld (如果 UFW 未激活或未找到规则)
     if ! $port_allowed && command -v firewall-cmd &> /dev/null && sudo systemctl is-active --quiet firewalld; then
         firewall_checked="firewalld"
-        # 检查默认区域或其他活动区域是否允许该端口
         local active_zones
         active_zones=$(sudo firewall-cmd --get-active-zones | grep -v "interfaces:" | awk '{print $1}')
-        if [ -z "$active_zones" ]; then # 如果没有特定活动区域，检查默认区域
+        if [ -z "$active_zones" ]; then 
              active_zones=$(sudo firewall-cmd --get-default-zone)
         fi
 
@@ -320,8 +316,6 @@ check_firewall_rule_for_port() {
     if [ "$firewall_checked" == "none" ]; then
         info "未检测到活动的 UFW 或 Firewalld。请根据您使用的防火墙手动检查端口 ${C_BOLD}${port}/${protocol}${C_RESET}。"
     fi
-    # 返回布尔值供调用者使用 (0 for true, 1 for false)
-    # $port_allowed
 }
 
 
@@ -338,13 +332,15 @@ display_frps_connection_info() {
     fi
 
     local public_ip
-    public_ip=$(get_public_ip) # 函数内部会打印IP或警告
+    public_ip=$(get_public_ip) 
 
+    local bind_addr_val=$(grep -E "^\s*bind_addr\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ')
     local bind_port=$(grep -E "^\s*bind_port\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ')
     local dashboard_port=$(grep -E "^\s*dashboard_port\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ')
-    local token=$(grep -E "^\s*token\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ') # 假设token没有空格
+    local token=$(grep -E "^\s*token\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ') 
 
-    echo -e "${C_WHITE}公网 IP 地址: ${C_BOLD}${C_LIGHT_WHITE}${public_ip}${C_RESET}"
+    echo -e "${C_WHITE}公网 IP 地址 (参考): ${C_BOLD}${C_LIGHT_WHITE}${public_ip}${C_RESET}"
+    echo -e "${C_WHITE}服务端绑定地址 (bind_addr): ${C_BOLD}${C_LIGHT_WHITE}${bind_addr_val:-0.0.0.0 (frps默认)}${C_RESET}"
     echo -e "${C_WHITE}frpc 连接端口 (bind_port): ${C_BOLD}${C_LIGHT_WHITE}${bind_port:-未配置}${C_RESET}"
     if [ -n "$bind_port" ]; then
         check_firewall_rule_for_port "$bind_port" "tcp"
@@ -357,7 +353,7 @@ display_frps_connection_info() {
     
     echo -e "${C_HINT_TEXT}---"
     echo -e "${C_HINT_TEXT}frpc 客户端连接时应配置:${C_RESET}"
-    echo -e "${C_HINT_TEXT}  server_addr = ${public_ip}${C_RESET}"
+    echo -e "${C_HINT_TEXT}  server_addr = ${public_ip} (或您的frps服务器实际可访问IP)${C_RESET}"
     echo -e "${C_HINT_TEXT}  server_port = ${bind_port:-<frps_bind_port>}${C_RESET}"
     if [ -n "$token" ]; then
         echo -e "${C_HINT_TEXT}  token = ${token}${C_RESET}"
@@ -380,7 +376,7 @@ install_or_update_frps() {
         read -p "$(echo -e "${C_MENU_PROMPT}是否仍要重新安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
           info "取消重新安装。"
-          display_frps_connection_info # 即使不重装也显示连接信息
+          display_frps_connection_info 
           return
         fi
       elif [[ "$local_version" > "$latest_version_no_v" ]]; then 
@@ -419,8 +415,20 @@ install_or_update_frps() {
   if [ ! -f "$FRPS_CONFIG_FILE" ]; then
     echo -e "${C_MSG_ACTION_TEXT}📝 正在创建 frps 配置文件 ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_MSG_ACTION_TEXT}...${C_RESET}"
     
-    local frps_bind_port frps_dashboard_port frps_dashboard_user frps_dashboard_pwd
+    local frps_bind_addr frps_bind_port frps_dashboard_port frps_dashboard_user frps_dashboard_pwd
     
+    echo -e "${C_MENU_PROMPT}请选择 frps 服务端绑定监听的地址类型:${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}1)${C_MENU_OPTION_TEXT} 仅 IPv4 (${C_LIGHT_WHITE}0.0.0.0${C_RESET}) - 监听所有可用IPv4地址 ${C_HINT_TEXT}(默认)${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}2)${C_MENU_OPTION_TEXT} 仅 IPv6 (${C_LIGHT_WHITE}::${C_RESET}) - 监听所有可用IPv6地址${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}3)${C_MENU_OPTION_TEXT} IPv4 和 IPv6 (${C_LIGHT_WHITE}::${C_RESET}) - 监听所有IPv6, 并可能接受IPv4 ${C_HINT_TEXT}(取决于系统 net.ipv6.bindv6only=0 设置)${C_RESET}"
+    read -p "$(echo -e "${C_MENU_PROMPT}请输入选项 [1-3] (默认为 1): ${C_RESET}")" bind_addr_choice
+    case "$bind_addr_choice" in
+        2) frps_bind_addr="::" ;;
+        3) frps_bind_addr="::" ;; # For frps, '::' might cover both if system is set up for dual-stack sockets
+        *) frps_bind_addr="0.0.0.0" ;; # Default to IPv4
+    esac
+    info "bind_addr 将设置为: ${C_LIGHT_WHITE}${frps_bind_addr}${C_RESET}"
+
     read -p "$(echo -e "${C_MENU_PROMPT}请输入 frps 服务端监听端口 (bind_port) ${C_INPUT_EXAMPLE}(默认为 6000)${C_MENU_PROMPT}: ${C_RESET}")" frps_bind_port
     frps_bind_port=${frps_bind_port:-6000}
     
@@ -435,6 +443,7 @@ install_or_update_frps() {
 
     sudo tee "${FRPS_CONFIG_FILE}" > /dev/null <<EOF
 [common]
+bind_addr = ${frps_bind_addr}
 bind_port = ${frps_bind_port}
 dashboard_port = ${frps_dashboard_port}
 dashboard_user = ${frps_dashboard_user}
@@ -479,7 +488,7 @@ EOF
   fi
   _manage_service "restart" "$FRPS_SERVICE_NAME" "frps"
   
-  display_frps_connection_info # 安装/更新后显示连接信息
+  display_frps_connection_info 
   echo -e "${C_MSG_SUCCESS_TEXT}🎉 frps 安装/更新完成！${C_RESET}"
 }
 
@@ -899,8 +908,6 @@ display_frpc_instance_connection_info() {
     echo -e "${C_WHITE}本地管理端口 (admin_port): ${C_BOLD}${C_LIGHT_WHITE}${admin_port:-未配置}${C_RESET}"
     
     echo -e "\n${C_SECTION_HEADER}此实例配置的代理 (Proxies):${C_RESET}"
-    # 使用 awk 提取 [section_name] 之后到下一个 [section_name] 或文件尾部的内容
-    # 排除 [common] 段
     local proxy_config
     proxy_config=$(awk '/^\[common\]/,/^\[/{next} /^\[.*\]/{p=1;print;next} p' "$selected_instance_config_file")
 
