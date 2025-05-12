@@ -78,19 +78,20 @@ check_root() {
 
 check_tools() {
   info "开始检查必要的工具..."
-  local tools_to_check_map # 使用 Bash 4+ 的关联数组
+  local tools_to_check_map 
   declare -A tools_to_check_map=(
     ["curl"]="curl"
     ["wget"]="wget"
     ["tar"]="tar"
     ["nano"]="nano"
-    ["readlink"]="coreutils" # readlink 通常在 coreutils 包中
+    ["readlink"]="coreutils" 
+    ["grep"]="grep" # grep for parsing firewall status
+    ["awk"]="gawk"  # awk for parsing firewall status, gawk is a common provider
   )
 
-  local pmg="" # Package manager
-  local apt_updated=false # 标记 apt-get update 是否已执行
+  local pmg="" 
+  local apt_updated=false 
 
-  # 检测包管理器
   if command -v apt-get &> /dev/null; then
     pmg="apt-get"
   elif command -v yum &> /dev/null; then
@@ -105,7 +106,7 @@ check_tools() {
       warn "命令 '${C_BOLD}${cmd}${C_RESET}' 未找到。"
       if [ -n "$pmg" ]; then
         read -p "$(echo -e "${C_MENU_PROMPT}是否尝试自动安装软件包 '${C_BOLD}${pkg}${C_RESET}${C_MENU_PROMPT}'? [${C_CONFIRM_PROMPT}Y/n${C_MENU_PROMPT}]: ${C_RESET}")" install_confirm
-        if [[ "$install_confirm" =~ ^[Yy]*$ ]]; then # 默认为 Y
+        if [[ "$install_confirm" =~ ^[Yy]*$ ]]; then 
           echo -e "${C_MSG_ACTION_TEXT}正在尝试安装 '${C_BOLD}${pkg}${C_RESET}${C_MSG_ACTION_TEXT}'...${C_RESET}"
           case "$pmg" in
             "apt-get")
@@ -199,20 +200,33 @@ _manage_service() {
     display_name=${display_name:-$service_name}
 
     case "$action" in
-        start|stop|restart|reload|status)
+        start|stop|restart|reload)
             echo -e "${C_MSG_ACTION_TEXT}正在 ${action} 服务 ${C_BOLD}${display_name}${C_RESET}${C_MSG_ACTION_TEXT}...${C_RESET}"
             if sudo systemctl "${action}" "${service_name}"; then
                 echo -e "${C_MSG_SUCCESS_TEXT}✅ 服务 ${C_BOLD}${display_name}${C_RESET}${C_MSG_SUCCESS_TEXT} ${action} 操作成功。${C_RESET}"
-                if [[ "$action" == "status" ]]; then
-                    sudo systemctl status "${service_name}" --no-pager
-                elif sudo systemctl is-active --quiet "${service_name}"; then
+                if sudo systemctl is-active --quiet "${service_name}"; then
                     info "服务 ${C_BOLD}${display_name}${C_RESET} 当前状态: ${C_STATUS_ACTIVE}active (running)${C_RESET}"
                 else
                     info "服务 ${C_BOLD}${display_name}${C_RESET} 当前状态: ${C_STATUS_INACTIVE}inactive (dead) 或其他${C_RESET}"
                 fi
             else
                 warn "服务 ${C_BOLD}${display_name}${C_RESET} ${action} 操作失败。"
-                sudo systemctl status "${service_name}" --no-pager
+                sudo systemctl status "${service_name}" --no-pager 
+            fi
+            ;;
+        status)
+            echo -e "${C_MSG_ACTION_TEXT}正在获取服务 ${C_BOLD}${display_name}${C_RESET}${C_MSG_ACTION_TEXT} 的状态...${C_RESET}"
+            sudo systemctl status "${service_name}" --no-pager 
+            if sudo systemctl is-active --quiet "${service_name}"; then
+                info "服务 ${C_BOLD}${display_name}${C_RESET} 当前状态总结: ${C_STATUS_ACTIVE}active (running)${C_RESET}"
+            elif systemctl list-units --full -all | grep -qF "$service_name"; then
+                if sudo systemctl status "${service_name}" --no-pager | grep -qE "activating \(auto-restart\)|failed \(Result: exit-code\)"; then
+                    warn "服务 ${C_BOLD}${display_name}${C_RESET} 当前状态总结: ${C_STATUS_INACTIVE}failed or in restart loop${C_RESET}"
+                else
+                    info "服务 ${C_BOLD}${display_name}${C_RESET} 当前状态总结: ${C_STATUS_INACTIVE}inactive (dead) 或其他${C_RESET}"
+                fi
+            else
+                info "服务 ${C_BOLD}${display_name}${C_RESET} (${C_BOLD}${service_name}${C_RESET}) ${C_STATUS_NOT_FOUND}未找到或未加载${C_RESET}。"
             fi
             ;;
         enable|disable)
@@ -241,15 +255,121 @@ _manage_service() {
     esac
 }
 
+# --- IP 和防火墙检查函数 ---
+get_public_ip() {
+    echo -e "${C_MSG_ACTION_TEXT}正在尝试获取公网IP地址...${C_RESET}"
+    local ip
+    ip=$(curl -s --connect-timeout 5 https://api.ipify.org) || \
+    ip=$(curl -s --connect-timeout 5 https://ipinfo.io/ip) || \
+    ip=$(curl -s --connect-timeout 5 https://icanhazip.com) || \
+    ip=$(curl -s --connect-timeout 5 https://checkip.amazonaws.com)
+    
+    if [ -n "$ip" ]; then
+        echo -e "${C_MSG_SUCCESS_TEXT}检测到公网IP: ${C_LIGHT_WHITE}${ip}${C_RESET}"
+        echo "$ip" # 返回IP供调用者使用
+    else
+        warn "无法自动获取公网IP地址。请手动确认。"
+        echo "未知" # 返回未知
+    fi
+}
+
+check_firewall_rule_for_port() {
+    local port=$1
+    local protocol=${2:-tcp} # 默认为tcp
+    local port_allowed=false
+    local firewall_checked="none"
+
+    echo -e "${C_MSG_ACTION_TEXT}正在检查防火墙规则 (端口 ${C_BOLD}${port}/${protocol}${C_RESET})...${C_RESET}"
+    echo -e "${C_HINT_TEXT}(这仅为基础检查，可能无法覆盖所有防火墙配置或云安全组规则)${C_RESET}"
+
+    # 检查 UFW
+    if command -v ufw &> /dev/null && sudo ufw status | grep -qw "Status: active"; then
+        firewall_checked="ufw"
+        if sudo ufw status verbose | grep -qw "${port}/${protocol}" | grep -qwi "ALLOW"; then
+            port_allowed=true
+            info "UFW: 端口 ${C_BOLD}${port}/${protocol}${C_RESET} 状态为 ${C_STATUS_ACTIVE}ALLOW${C_RESET}."
+        else
+            warn "UFW: 端口 ${C_BOLD}${port}/${protocol}${C_RESET} ${C_STATUS_INACTIVE}未明确允许 (或被拒绝)${C_RESET}。您可能需要执行: ${C_LIGHT_WHITE}sudo ufw allow ${port}/${protocol}${C_RESET}"
+        fi
+    fi
+
+    # 检查 Firewalld (如果 UFW 未激活或未找到规则)
+    if ! $port_allowed && command -v firewall-cmd &> /dev/null && sudo systemctl is-active --quiet firewalld; then
+        firewall_checked="firewalld"
+        # 检查默认区域或其他活动区域是否允许该端口
+        local active_zones
+        active_zones=$(sudo firewall-cmd --get-active-zones | grep -v "interfaces:" | awk '{print $1}')
+        if [ -z "$active_zones" ]; then # 如果没有特定活动区域，检查默认区域
+             active_zones=$(sudo firewall-cmd --get-default-zone)
+        fi
+
+        local found_in_firewalld=false
+        for zone in $active_zones; do
+            if sudo firewall-cmd --zone="$zone" --query-port="${port}/${protocol}" &>/dev/null; then
+                port_allowed=true
+                found_in_firewalld=true
+                info "Firewalld: 端口 ${C_BOLD}${port}/${protocol}${C_RESET} 在区域 '${C_BOLD}${zone}${C_RESET}' 中状态为 ${C_STATUS_ACTIVE}允许${C_RESET}."
+                break 
+            fi
+        done
+        if ! $found_in_firewalld; then
+             warn "Firewalld: 端口 ${C_BOLD}${port}/${protocol}${C_RESET} 在活动区域中 ${C_STATUS_INACTIVE}未明确允许${C_RESET}。您可能需要执行 (例如添加到public区域): ${C_LIGHT_WHITE}sudo firewall-cmd --permanent --add-port=${port}/${protocol} && sudo firewall-cmd --reload${C_RESET}"
+        fi
+    fi
+    
+    if [ "$firewall_checked" == "none" ]; then
+        info "未检测到活动的 UFW 或 Firewalld。请根据您使用的防火墙手动检查端口 ${C_BOLD}${port}/${protocol}${C_RESET}。"
+    fi
+    # 返回布尔值供调用者使用 (0 for true, 1 for false)
+    # $port_allowed
+}
+
+
 FRPS_SERVICE_NAME="frps.service"
 FRPS_CONFIG_FILE="${FRP_INSTALL_DIR}/frps.ini"
 FRPS_SYSTEMD_FILE="/etc/systemd/system/${FRPS_SERVICE_NAME}"
 FRPS_BINARY_PATH="${FRP_INSTALL_DIR}/frps"
 
+display_frps_connection_info() {
+    echo -e "${C_SUB_MENU_TITLE}--- frps (服务端) 连接信息 ---${C_RESET}"
+    if [ ! -f "$FRPS_CONFIG_FILE" ]; then
+        warn "frps 配置文件 (${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_RESET}) 未找到。请先安装frps。"
+        return
+    fi
+
+    local public_ip
+    public_ip=$(get_public_ip) # 函数内部会打印IP或警告
+
+    local bind_port=$(grep -E "^\s*bind_port\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ')
+    local dashboard_port=$(grep -E "^\s*dashboard_port\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ')
+    local token=$(grep -E "^\s*token\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ') # 假设token没有空格
+
+    echo -e "${C_WHITE}公网 IP 地址: ${C_BOLD}${C_LIGHT_WHITE}${public_ip}${C_RESET}"
+    echo -e "${C_WHITE}frpc 连接端口 (bind_port): ${C_BOLD}${C_LIGHT_WHITE}${bind_port:-未配置}${C_RESET}"
+    if [ -n "$bind_port" ]; then
+        check_firewall_rule_for_port "$bind_port" "tcp"
+    fi
+    echo -e "${C_WHITE}Dashboard 端口 (dashboard_port): ${C_BOLD}${C_LIGHT_WHITE}${dashboard_port:-未配置}${C_RESET}"
+    if [ -n "$dashboard_port" ]; then
+        check_firewall_rule_for_port "$dashboard_port" "tcp"
+    fi
+    echo -e "${C_WHITE}Token 认证: ${C_BOLD}${C_LIGHT_WHITE}${token:-未配置}${C_RESET}"
+    
+    echo -e "${C_HINT_TEXT}---"
+    echo -e "${C_HINT_TEXT}frpc 客户端连接时应配置:${C_RESET}"
+    echo -e "${C_HINT_TEXT}  server_addr = ${public_ip}${C_RESET}"
+    echo -e "${C_HINT_TEXT}  server_port = ${bind_port:-<frps_bind_port>}${C_RESET}"
+    if [ -n "$token" ]; then
+        echo -e "${C_HINT_TEXT}  token = ${token}${C_RESET}"
+    fi
+    echo -e "${C_HINT_TEXT}请确保上述端口在您的服务器防火墙和云平台安全组中已正确开放。${C_RESET}"
+}
+
+
 install_or_update_frps() {
   echo -e "${C_SUB_MENU_TITLE}--- 安装/更新 frps (服务端) ---${C_RESET}"
   get_latest_frp_version
-  local latest_version_no_v="${LATEST_FRP_VERSION#v}" # 去掉 'v' 前缀
+  local latest_version_no_v="${LATEST_FRP_VERSION#v}" 
 
   if [ -f "$FRPS_BINARY_PATH" ]; then
     local local_version=$("$FRPS_BINARY_PATH" --version 2>/dev/null)
@@ -260,9 +380,10 @@ install_or_update_frps() {
         read -p "$(echo -e "${C_MENU_PROMPT}是否仍要重新安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
           info "取消重新安装。"
+          display_frps_connection_info # 即使不重装也显示连接信息
           return
         fi
-      elif [[ "$local_version" > "$latest_version_no_v" ]]; then # 简单字符串比较，可能不完全准确，但对于frp版本格式通常有效
+      elif [[ "$local_version" > "$latest_version_no_v" ]]; then 
         warn "当前安装版本 (${C_LIGHT_WHITE}${local_version}${C_RESET}) 高于 GitHub 最新版 (${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET})。可能使用了测试版或自定义版本。"
         read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用 GitHub 最新版覆盖安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
@@ -277,11 +398,10 @@ install_or_update_frps() {
     fi
   fi
 
-  # 在复制新文件前，尝试停止正在运行的 frps 服务
   if systemctl is-active --quiet "$FRPS_SERVICE_NAME"; then
     info "检测到 frps 服务正在运行，正在尝试停止它以便更新..."
     _manage_service "stop" "$FRPS_SERVICE_NAME" "frps"
-    sleep 2 # 等待服务停止
+    sleep 2 
     if systemctl is-active --quiet "$FRPS_SERVICE_NAME"; then
         warn "停止 frps 服务失败。更新可能会失败。如果遇到问题，请手动停止服务 (sudo systemctl stop ${FRPS_SERVICE_NAME}) 后重试。"
     else
@@ -289,7 +409,7 @@ install_or_update_frps() {
     fi
   fi
   
-  download_and_extract_frp "$LATEST_FRP_VERSION" "$FRP_ARCH" "frps" # 下载和解压移到这里
+  download_and_extract_frp "$LATEST_FRP_VERSION" "$FRP_ARCH" "frps" 
 
   echo -e "${C_MSG_ACTION_TEXT}⚙️ 正在安装 frps 到 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_MSG_ACTION_TEXT}...${C_RESET}"
   sudo mkdir -p "$FRP_INSTALL_DIR"
@@ -359,11 +479,7 @@ EOF
   fi
   _manage_service "restart" "$FRPS_SERVICE_NAME" "frps"
   
-  local current_dashboard_port=$(grep -E "^\s*dashboard_port\s*=" "${FRPS_CONFIG_FILE}" 2>/dev/null | cut -d '=' -f2 | tr -d ' ' || echo "未配置或读取失败")
-  echo -e "${C_MSG_INFO_TEXT}👉 frps 配置文件位置: ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_RESET}"
-  if [[ "$current_dashboard_port" != "未配置或读取失败" ]]; then
-    echo -e "${C_MSG_INFO_TEXT}🔑 frps Dashboard (如果启用): ${C_LIGHT_WHITE}http://<您的服务器IP>:${current_dashboard_port}${C_RESET}"
-  fi
+  display_frps_connection_info # 安装/更新后显示连接信息
   echo -e "${C_MSG_SUCCESS_TEXT}🎉 frps 安装/更新完成！${C_RESET}"
 }
 
@@ -422,11 +538,12 @@ manage_frps_menu() {
     echo -e "  ${C_MENU_OPTION_NUM}3)${C_MENU_OPTION_TEXT} 停止 frps 服务${C_RESET}"
     echo -e "  ${C_MENU_OPTION_NUM}4)${C_MENU_OPTION_TEXT} 重启 frps 服务${C_RESET}"
     echo -e "  ${C_MENU_OPTION_NUM}5)${C_MENU_OPTION_TEXT} 查看 frps 服务状态${C_RESET}"
-    echo -e "  ${C_MENU_OPTION_NUM}6)${C_MENU_OPTION_TEXT} 查看 frps 日志 ${C_HINT_TEXT}(实时, Ctrl+C 退出)${C_RESET}"
-    echo -e "  ${C_MENU_OPTION_NUM}7)${C_MENU_OPTION_TEXT} 编辑 frps 配置文件${C_RESET}"
-    echo -e "  ${C_MENU_OPTION_NUM}8)${C_MENU_OPTION_TEXT} ${C_LIGHT_RED}卸载 frps${C_RESET}"
-    echo -e "  ${C_MENU_OPTION_NUM}9)${C_MENU_OPTION_TEXT} 返回主菜单${C_RESET}"
-    echo -e "${C_SEPARATOR}-----------------------------------${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}6)${C_MENU_OPTION_TEXT} ${C_LIGHT_BLUE}查看 frps 连接信息 (IP/端口/防火墙检查)${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}7)${C_MENU_OPTION_TEXT} 查看 frps 日志 ${C_HINT_TEXT}(实时, Ctrl+C 退出)${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}8)${C_MENU_OPTION_TEXT} 编辑 frps 配置文件${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}9)${C_MENU_OPTION_TEXT} ${C_LIGHT_RED}卸载 frps${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}0)${C_MENU_OPTION_TEXT} 返回主菜单${C_RESET}"
+    echo -e "${C_SEPARATOR}----------------------------------------------------${C_RESET}"
     read -p "$(echo -e "${C_MENU_PROMPT}请输入选项: ${C_RESET}")" choice
 
     case $choice in
@@ -435,13 +552,14 @@ manage_frps_menu() {
       3) _manage_service "stop" "$FRPS_SERVICE_NAME" "frps" ;;
       4) _manage_service "restart" "$FRPS_SERVICE_NAME" "frps" ;;
       5) _manage_service "status" "$FRPS_SERVICE_NAME" "frps" ;;
-      6) echo -e "${C_MSG_ACTION_TEXT}正在显示服务 frps 的最新日志 (按 Ctrl+C 退出)...${C_RESET}"; sudo journalctl -u "${FRPS_SERVICE_NAME}" -n 100 -f --no-pager ;;
-      7) _manage_service "edit_config" "$FRPS_SERVICE_NAME" "frps" "$FRPS_CONFIG_FILE" ;;
-      8) uninstall_frps ;;
-      9) break ;;
+      6) display_frps_connection_info ;;
+      7) echo -e "${C_MSG_ACTION_TEXT}正在显示服务 frps 的最新日志 (按 Ctrl+C 退出)...${C_RESET}"; sudo journalctl -u "${FRPS_SERVICE_NAME}" -n 100 -f --no-pager ;;
+      8) _manage_service "edit_config" "$FRPS_SERVICE_NAME" "frps" "$FRPS_CONFIG_FILE" ;;
+      9) uninstall_frps ;;
+      0) break ;;
       *) warn "无效选项。" ;;
     esac
-    [[ "$choice" != "9" ]] && press_enter_to_continue
+    [[ "$choice" != "0" ]] && press_enter_to_continue
   done
 }
 
@@ -479,7 +597,6 @@ install_or_update_frpc_binary() {
     fi
   fi
 
-  # 在复制新文件前，尝试停止所有正在运行的 frpc 实例服务
   if [ -d "$FRPC_CLIENTS_DIR" ] && [ -n "$(ls -A ${FRPC_CLIENTS_DIR}/*.ini 2>/dev/null)" ]; then
     info "检测到 frpc 实例配置，正在尝试停止相关服务以便更新 frpc 二进制文件..."
     local instance_stopped_count=0
@@ -493,7 +610,7 @@ install_or_update_frpc_binary() {
                 instance_stopped_count=$((instance_stopped_count + 1))
             fi
         else
-            instance_stopped_count=$((instance_stopped_count + 1)) # Already stopped or not found
+            instance_stopped_count=$((instance_stopped_count + 1)) 
         fi
     done
     if [ "$instance_stopped_count" -lt "$instance_total_count" ]; then
@@ -757,6 +874,47 @@ delete_frpc_instance() {
   fi
 }
 
+display_frpc_instance_connection_info() {
+    if [ -z "$selected_instance_name" ]; then
+        warn "错误：没有选定的 frpc 实例。"
+        return
+    fi
+    if [ ! -f "$selected_instance_config_file" ]; then
+        warn "frpc 实例配置文件 (${C_PATH_INFO}${selected_instance_config_file}${C_RESET}) 未找到。"
+        return
+    fi
+
+    echo -e "${C_SUB_MENU_TITLE}--- frpc 实例 [${C_BOLD}${selected_instance_name}${C_SUB_MENU_TITLE}] 连接配置详情 ---${C_RESET}"
+    
+    local server_addr=$(grep -E "^\s*server_addr\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
+    local server_port=$(grep -E "^\s*server_port\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
+    local token=$(grep -E "^\s*token\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
+    local admin_addr=$(grep -E "^\s*admin_addr\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
+    local admin_port=$(grep -E "^\s*admin_port\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
+
+    echo -e "${C_WHITE}连接到服务端 (server_addr): ${C_BOLD}${C_LIGHT_WHITE}${server_addr:-未配置}${C_RESET}"
+    echo -e "${C_WHITE}服务端端口 (server_port): ${C_BOLD}${C_LIGHT_WHITE}${server_port:-未配置}${C_RESET}"
+    echo -e "${C_WHITE}Token 认证: ${C_BOLD}${C_LIGHT_WHITE}${token:-未配置}${C_RESET}"
+    echo -e "${C_WHITE}本地管理地址 (admin_addr): ${C_BOLD}${C_LIGHT_WHITE}${admin_addr:-未配置}${C_RESET}"
+    echo -e "${C_WHITE}本地管理端口 (admin_port): ${C_BOLD}${C_LIGHT_WHITE}${admin_port:-未配置}${C_RESET}"
+    
+    echo -e "\n${C_SECTION_HEADER}此实例配置的代理 (Proxies):${C_RESET}"
+    # 使用 awk 提取 [section_name] 之后到下一个 [section_name] 或文件尾部的内容
+    # 排除 [common] 段
+    local proxy_config
+    proxy_config=$(awk '/^\[common\]/,/^\[/{next} /^\[.*\]/{p=1;print;next} p' "$selected_instance_config_file")
+
+    if [ -n "$proxy_config" ]; then
+        echo -e "${C_WHITE}${proxy_config}${C_RESET}"
+    else
+        info "此实例当前未配置任何代理 (除了 [common] 部分)。"
+    fi
+    echo -e "${C_HINT_TEXT}---"
+    echo -e "${C_HINT_TEXT}请确保服务端 (${server_addr}:${server_port}) 正在运行且网络可达。${C_RESET}"
+    echo -e "${C_HINT_TEXT}如果服务端配置了token，请确保此处的token与之匹配。${C_RESET}"
+}
+
+
 manage_single_frpc_instance_menu() {
     if [ -z "$selected_instance_name" ]; then 
         warn "错误：没有选定的 frpc 实例。"
@@ -774,9 +932,10 @@ manage_single_frpc_instance_menu() {
         echo -e "  ${C_MENU_OPTION_NUM}3)${C_MENU_OPTION_TEXT} 重启此实例服务${C_RESET}"
         echo -e "  ${C_MENU_OPTION_NUM}4)${C_MENU_OPTION_TEXT} 重载此实例配置 ${C_HINT_TEXT}(reload)${C_RESET}"
         echo -e "  ${C_MENU_OPTION_NUM}5)${C_MENU_OPTION_TEXT} 查看此实例服务状态${C_RESET}"
-        echo -e "  ${C_MENU_OPTION_NUM}6)${C_MENU_OPTION_TEXT} 查看此实例日志 ${C_HINT_TEXT}(实时, Ctrl+C 退出)${C_RESET}"
-        echo -e "  ${C_MENU_OPTION_NUM}7)${C_MENU_OPTION_TEXT} 编辑此实例配置文件${C_RESET}"
-        echo -e "  ${C_MENU_OPTION_NUM}8)${C_MENU_OPTION_TEXT} 返回上一级菜单${C_RESET}"
+        echo -e "  ${C_MENU_OPTION_NUM}6)${C_MENU_OPTION_TEXT} ${C_LIGHT_BLUE}查看此实例连接配置详情${C_RESET}"
+        echo -e "  ${C_MENU_OPTION_NUM}7)${C_MENU_OPTION_TEXT} 查看此实例日志 ${C_HINT_TEXT}(实时, Ctrl+C 退出)${C_RESET}"
+        echo -e "  ${C_MENU_OPTION_NUM}8)${C_MENU_OPTION_TEXT} 编辑此实例配置文件${C_RESET}"
+        echo -e "  ${C_MENU_OPTION_NUM}9)${C_MENU_OPTION_TEXT} 返回上一级菜单${C_RESET}"
         echo -e "${C_SEPARATOR}------------------------------------------${C_RESET}"
         read -p "$(echo -e "${C_MENU_PROMPT}请输入选项: ${C_RESET}")" choice
 
@@ -786,12 +945,13 @@ manage_single_frpc_instance_menu() {
             3) _manage_service "restart" "$selected_instance_service_name" "$display_name" ;;
             4) _manage_service "reload" "$selected_instance_service_name" "$display_name" ;;
             5) _manage_service "status" "$selected_instance_service_name" "$display_name" ;;
-            6) echo -e "${C_MSG_ACTION_TEXT}正在显示服务 ${display_name} 的最新日志 (按 Ctrl+C 退出)...${C_RESET}"; sudo journalctl -u "${selected_instance_service_name}" -n 100 -f --no-pager ;;
-            7) _manage_service "edit_config" "$selected_instance_service_name" "$display_name" "$selected_instance_config_file" ;;
-            8) break ;;
+            6) display_frpc_instance_connection_info ;;
+            7) echo -e "${C_MSG_ACTION_TEXT}正在显示服务 ${display_name} 的最新日志 (按 Ctrl+C 退出)...${C_RESET}"; sudo journalctl -u "${selected_instance_service_name}" -n 100 -f --no-pager ;;
+            8) _manage_service "edit_config" "$selected_instance_service_name" "$display_name" "$selected_instance_config_file" ;;
+            9) break ;;
             *) warn "无效选项。" ;;
         esac
-        [[ "$choice" != "8" ]] && press_enter_to_continue
+        [[ "$choice" != "9" ]] && press_enter_to_continue
     done
 }
 
@@ -936,7 +1096,7 @@ main_menu() {
   while true; do
     clear
     echo -e "${C_MAIN_TITLE}\n========== zzfrp 管理脚本 by:RY-zzcn ==========${C_RESET}" 
-    echo -e "${C_WHITE}  frp版本：by:fatedier (frp作者)${C_RESET}"
+    echo -e "${C_WHITE}  frp版本：by:fatedier (原始作者)${C_RESET}"
     if [ -n "$shortcut_hint" ]; then
         echo -e "${C_HINT_TEXT}${shortcut_hint}${C_RESET}"
     fi
