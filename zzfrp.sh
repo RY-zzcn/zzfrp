@@ -87,6 +87,7 @@ check_tools() {
     ["readlink"]="coreutils" 
     ["grep"]="grep" 
     ["awk"]="gawk"  
+    ["openssl"]="openssl" 
   )
 
   local pmg="" 
@@ -337,7 +338,17 @@ display_frps_connection_info() {
     local bind_addr_val=$(grep -E "^\s*bind_addr\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ')
     local bind_port=$(grep -E "^\s*bind_port\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ')
     local dashboard_port=$(grep -E "^\s*dashboard_port\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ')
-    local token=$(grep -E "^\s*token\s*=" "$FRPS_CONFIG_FILE" | cut -d '=' -f2 | tr -d ' ') 
+    local token_line=$(grep -E "^\s*token\s*=" "$FRPS_CONFIG_FILE") 
+    local token_value=""
+    local token_status="${C_LIGHT_WHITE}未配置 (或已注释)${C_RESET}"
+
+    if [[ -n "$token_line" && ! "$token_line" =~ ^\s*# ]]; then 
+        token_value=$(echo "$token_line" | cut -d '=' -f2 | tr -d ' ')
+        if [ -n "$token_value" ]; then
+            token_status="${C_BOLD}${C_LIGHT_GREEN}${token_value}${C_RESET}"
+        fi
+    fi
+
 
     echo -e "${C_WHITE}公网 IP 地址 (参考): ${C_BOLD}${C_LIGHT_WHITE}${public_ip}${C_RESET}"
     echo -e "${C_WHITE}服务端绑定地址 (bind_addr): ${C_BOLD}${C_LIGHT_WHITE}${bind_addr_val:-0.0.0.0 (frps默认)}${C_RESET}"
@@ -349,50 +360,110 @@ display_frps_connection_info() {
     if [ -n "$dashboard_port" ]; then
         check_firewall_rule_for_port "$dashboard_port" "tcp"
     fi
-    echo -e "${C_WHITE}Token 认证: ${C_BOLD}${C_LIGHT_WHITE}${token:-未配置}${C_RESET}"
+    echo -e "${C_WHITE}Token 认证: ${token_status}"
     
     echo -e "${C_HINT_TEXT}---"
     echo -e "${C_HINT_TEXT}frpc 客户端连接时应配置:${C_RESET}"
     echo -e "${C_HINT_TEXT}  server_addr = ${public_ip} (或您的frps服务器实际可访问IP)${C_RESET}"
     echo -e "${C_HINT_TEXT}  server_port = ${bind_port:-<frps_bind_port>}${C_RESET}"
-    if [ -n "$token" ]; then
-        echo -e "${C_HINT_TEXT}  token = ${token}${C_RESET}"
+    if [[ -n "$token_line" && ! "$token_line" =~ ^\s*# && -n "$token_value" ]]; then
+        echo -e "${C_HINT_TEXT}  token = ${token_value}${C_RESET}"
     fi
     echo -e "${C_HINT_TEXT}请确保上述端口在您的服务器防火墙和云平台安全组中已正确开放。${C_RESET}"
 }
 
+generate_random_token() {
+    if command -v openssl &> /dev/null; then
+        openssl rand -hex 16 
+    else
+        date +%s%N | md5sum | head -c 32
+    fi
+}
 
 install_or_update_frps() {
   echo -e "${C_SUB_MENU_TITLE}--- 安装/更新 frps (服务端) ---${C_RESET}"
   get_latest_frp_version
   local latest_version_no_v="${LATEST_FRP_VERSION#v}" 
+  local force_reconfigure=false
 
-  if [ -f "$FRPS_BINARY_PATH" ]; then
+  if [ -f "$FRPS_BINARY_PATH" ]; then 
     local local_version=$("$FRPS_BINARY_PATH" --version 2>/dev/null)
     if [ -n "$local_version" ]; then
       info "当前已安装 frps 版本: ${C_LIGHT_WHITE}${local_version}${C_RESET}"
       if [ "$local_version" == "$latest_version_no_v" ]; then
         info "您已安装最新版本的 frps (${C_LIGHT_WHITE}${local_version}${C_RESET})。"
-        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要重新安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
+        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要重新安装二进制文件? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
-          info "取消重新安装。"
-          display_frps_connection_info 
-          return
+          info "取消重新安装二进制文件。"
+          if [ -f "$FRPS_CONFIG_FILE" ]; then
+            read -p "$(echo -e "${C_MENU_PROMPT}检测到现有配置，是否要重新配置frps (监听地址、端口、Dashboard、Token等)? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_existing_confirm
+            if [[ "$reconfigure_existing_confirm" =~ ^[Yy]$ ]]; then
+                force_reconfigure=true
+                sudo rm -f "$FRPS_CONFIG_FILE" 
+                info "将重新进行frps配置。"
+            else
+                info "保留现有配置。"
+                display_frps_connection_info 
+                return 
+            fi
+          fi
+        else 
+            if [ -f "$FRPS_CONFIG_FILE" ]; then
+                 read -p "$(echo -e "${C_MENU_PROMPT}检测到旧配置，是否同时重新配置frps (监听地址、端口、Dashboard、Token等)? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_on_reinstall_confirm
+                 if [[ "$reconfigure_on_reinstall_confirm" =~ ^[Yy]$ ]]; then
+                    force_reconfigure=true
+                    sudo rm -f "$FRPS_CONFIG_FILE" 
+                    info "将重新进行frps配置。"
+                 else
+                    info "保留现有配置，仅更新二进制文件。"
+                 fi
+            fi
         fi
       elif [[ "$local_version" > "$latest_version_no_v" ]]; then 
         warn "当前安装版本 (${C_LIGHT_WHITE}${local_version}${C_RESET}) 高于 GitHub 最新版 (${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET})。可能使用了测试版或自定义版本。"
-        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用 GitHub 最新版覆盖安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
+        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用 GitHub 最新版覆盖安装二进制文件? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
           info "取消覆盖安装。"
           return
+        else 
+            if [ -f "$FRPS_CONFIG_FILE" ]; then
+                 read -p "$(echo -e "${C_MENU_PROMPT}检测到旧配置，是否同时重新配置frps? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_on_overwrite_confirm
+                 if [[ "$reconfigure_on_overwrite_confirm" =~ ^[Yy]$ ]]; then
+                    force_reconfigure=true
+                    sudo rm -f "$FRPS_CONFIG_FILE"
+                    info "将重新进行frps配置。"
+                 else
+                    info "保留现有配置，仅更新二进制文件。"
+                 fi
+            fi
         fi
       else
          info "检测到新版本 frps: ${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET} (当前: ${local_version})。准备更新..."
+         if [ -f "$FRPS_CONFIG_FILE" ]; then
+             read -p "$(echo -e "${C_MENU_PROMPT}检测到旧配置，是否同时重新配置frps? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_on_upgrade_confirm
+             if [[ "$reconfigure_on_upgrade_confirm" =~ ^[Yy]$ ]]; then
+                force_reconfigure=true
+                sudo rm -f "$FRPS_CONFIG_FILE"
+                info "将重新进行frps配置。"
+             else
+                info "保留现有配置，仅更新二进制文件。"
+             fi
+         fi
       fi
     else
-      warn "无法获取当前 frps 版本信息，将尝试更新。"
+      warn "无法获取当前 frps 版本信息，将尝试安装/更新。"
+      if [ -f "$FRPS_CONFIG_FILE" ]; then
+          read -p "$(echo -e "${C_MENU_PROMPT}检测到现有配置文件，是否要重新配置frps? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_unknown_ver_confirm
+          if [[ "$reconfigure_unknown_ver_confirm" =~ ^[Yy]$ ]]; then
+             force_reconfigure=true
+             sudo rm -f "$FRPS_CONFIG_FILE"
+             info "将重新进行frps配置。"
+          else
+             info "保留现有配置，仅更新二进制文件。"
+          fi
+      fi
     fi
-  fi
+  fi 
 
   if systemctl is-active --quiet "$FRPS_SERVICE_NAME"; then
     info "检测到 frps 服务正在运行，正在尝试停止它以便更新..."
@@ -412,10 +483,10 @@ install_or_update_frps() {
   sudo chmod +x "frps"
   sudo cp "frps" "${FRPS_BINARY_PATH}"
   
-  if [ ! -f "$FRPS_CONFIG_FILE" ]; then
-    echo -e "${C_MSG_ACTION_TEXT}📝 正在创建 frps 配置文件 ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_MSG_ACTION_TEXT}...${C_RESET}"
+  if [ ! -f "$FRPS_CONFIG_FILE" ] || $force_reconfigure ; then 
+    echo -e "${C_MSG_ACTION_TEXT}📝 正在创建/重新配置 frps 配置文件 ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_MSG_ACTION_TEXT}...${C_RESET}"
     
-    local frps_bind_addr frps_bind_port frps_dashboard_port frps_dashboard_user frps_dashboard_pwd
+    local frps_bind_addr frps_bind_port frps_dashboard_port frps_dashboard_user frps_dashboard_pwd frps_token_choice frps_token_value
     
     echo -e "${C_MENU_PROMPT}请选择 frps 服务端绑定监听的地址类型:${C_RESET}"
     echo -e "  ${C_MENU_OPTION_NUM}1)${C_MENU_OPTION_TEXT} 仅 IPv4 (${C_LIGHT_WHITE}0.0.0.0${C_RESET}) - 监听所有可用IPv4地址 ${C_HINT_TEXT}(默认)${C_RESET}"
@@ -424,8 +495,8 @@ install_or_update_frps() {
     read -p "$(echo -e "${C_MENU_PROMPT}请输入选项 [1-3] (默认为 1): ${C_RESET}")" bind_addr_choice
     case "$bind_addr_choice" in
         2) frps_bind_addr="::" ;;
-        3) frps_bind_addr="::" ;; # For frps, '::' might cover both if system is set up for dual-stack sockets
-        *) frps_bind_addr="0.0.0.0" ;; # Default to IPv4
+        3) frps_bind_addr="::" ;; 
+        *) frps_bind_addr="0.0.0.0" ;; 
     esac
     info "bind_addr 将设置为: ${C_LIGHT_WHITE}${frps_bind_addr}${C_RESET}"
 
@@ -441,6 +512,16 @@ install_or_update_frps() {
     read -p "$(echo -e "${C_MENU_PROMPT}请输入 frps Dashboard 密码 (dashboard_pwd) ${C_INPUT_EXAMPLE}(默认为 admin, ${C_BOLD}${C_LIGHT_RED}强烈建议修改！${C_RESET}${C_INPUT_EXAMPLE})${C_MENU_PROMPT}: ${C_RESET}")" frps_dashboard_pwd
     frps_dashboard_pwd=${frps_dashboard_pwd:-admin}
 
+    read -p "$(echo -e "${C_MENU_PROMPT}是否为 frps 配置 token 认证 (增强安全性)? [${C_CONFIRM_PROMPT}Y/n${C_MENU_PROMPT}]: ${C_RESET}")" frps_token_choice
+    local token_config_line="# token = YOUR_VERY_SECRET_TOKEN" 
+    if [[ "$frps_token_choice" =~ ^[Yy]$ ]]; then
+        frps_token_value=$(generate_random_token)
+        info "已生成随机 Token: ${C_LIGHT_WHITE}${frps_token_value}${C_RESET}"
+        token_config_line="token = ${frps_token_value}"
+    else
+        info "未配置 Token 认证。"
+    fi
+
     sudo tee "${FRPS_CONFIG_FILE}" > /dev/null <<EOF
 [common]
 bind_addr = ${frps_bind_addr}
@@ -448,15 +529,14 @@ bind_port = ${frps_bind_port}
 dashboard_port = ${frps_dashboard_port}
 dashboard_user = ${frps_dashboard_user}
 dashboard_pwd = ${frps_dashboard_pwd}
-# token = YOUR_VERY_SECRET_TOKEN 
+${token_config_line}
 # log_file = /var/log/frps.log 
 # log_level = info 
 # log_max_days = 3 
 EOF
-    echo -e "${C_MSG_SUCCESS_TEXT}✅ frps 配置文件已根据您的输入创建。${C_RESET}"
+    echo -e "${C_MSG_SUCCESS_TEXT}✅ frps 配置文件已根据您的输入创建/更新。${C_RESET}"
   else
-    info "检测到已存在的 frps 配置文件: ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_RESET}，将不会覆盖。"
-    info "如需修改，请使用菜单中的编辑选项。"
+    info "保留现有 frps 配置文件: ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_RESET}。"
   fi
 
   cleanup_temp_files "$LATEST_FRP_VERSION" "$FRP_ARCH"
@@ -790,13 +870,24 @@ add_frpc_instance() {
 
   local admin_port_default=$((7401 + $(ls -1qA ${FRPC_CLIENTS_DIR}/*.ini 2>/dev/null | wc -l)))
   read -p "$(echo -e "${C_MENU_PROMPT}请输入此 frpc 实例的本地管理端口 ${C_INPUT_EXAMPLE}(用于热重载, 默认为 ${admin_port_default}, 确保唯一)${C_MENU_PROMPT}: ${C_RESET}")" admin_port; admin_port=${admin_port:-$admin_port_default}
+  
+  local frpc_token_value
+  read -p "$(echo -e "${C_MENU_PROMPT}请输入 frpc 连接到服务端的 token ${C_INPUT_EXAMPLE}(如果 frps 服务端未配置 token，请直接回车)${C_MENU_PROMPT}: ${C_RESET}")" frpc_token_value
+  local frpc_token_config_line="# token = YOUR_VERY_SECRET_TOKEN" 
+  if [ -n "$frpc_token_value" ]; then
+      frpc_token_config_line="token = ${frpc_token_value}"
+      info "frpc token 将设置为: ${C_LIGHT_WHITE}${frpc_token_value}${C_RESET}"
+  else
+      info "frpc 将不配置 token (或使用注释掉的默认值)。"
+  fi
+
 
   echo -e "${C_MSG_ACTION_TEXT}📝 正在创建配置文件 ${C_PATH_INFO}${conf_file_path}${C_MSG_ACTION_TEXT}...${C_RESET}"
   sudo tee "${conf_file_path}" > /dev/null <<EOF
 [common]
 server_addr = ${server_addr}
 server_port = ${server_port}
-# token = YOUR_VERY_SECRET_TOKEN 
+${frpc_token_config_line}
 
 admin_addr = 127.0.0.1
 admin_port = ${admin_port}
@@ -897,13 +988,23 @@ display_frpc_instance_connection_info() {
     
     local server_addr=$(grep -E "^\s*server_addr\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
     local server_port=$(grep -E "^\s*server_port\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
-    local token=$(grep -E "^\s*token\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
+    local token_line=$(grep -E "^\s*token\s*=" "$selected_instance_config_file")
+    local token_value=""
+    local token_status="${C_LIGHT_WHITE}未配置 (或已注释)${C_RESET}"
+
+    if [[ -n "$token_line" && ! "$token_line" =~ ^\s*# ]]; then
+        token_value=$(echo "$token_line" | cut -d '=' -f2 | tr -d ' ')
+        if [ -n "$token_value" ]; then
+            token_status="${C_BOLD}${C_LIGHT_GREEN}${token_value}${C_RESET}"
+        fi
+    fi
+
     local admin_addr=$(grep -E "^\s*admin_addr\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
     local admin_port=$(grep -E "^\s*admin_port\s*=" "$selected_instance_config_file" | cut -d '=' -f2 | tr -d ' ')
 
     echo -e "${C_WHITE}连接到服务端 (server_addr): ${C_BOLD}${C_LIGHT_WHITE}${server_addr:-未配置}${C_RESET}"
     echo -e "${C_WHITE}服务端端口 (server_port): ${C_BOLD}${C_LIGHT_WHITE}${server_port:-未配置}${C_RESET}"
-    echo -e "${C_WHITE}Token 认证: ${C_BOLD}${C_LIGHT_WHITE}${token:-未配置}${C_RESET}"
+    echo -e "${C_WHITE}Token 认证: ${token_status}"
     echo -e "${C_WHITE}本地管理地址 (admin_addr): ${C_BOLD}${C_LIGHT_WHITE}${admin_addr:-未配置}${C_RESET}"
     echo -e "${C_WHITE}本地管理端口 (admin_port): ${C_BOLD}${C_LIGHT_WHITE}${admin_port:-未配置}${C_RESET}"
     
@@ -1103,7 +1204,7 @@ main_menu() {
   while true; do
     clear
     echo -e "${C_MAIN_TITLE}\n========== zzfrp 管理脚本 by:RY-zzcn ==========${C_RESET}" 
-    echo -e "${C_WHITE}  frp版本：by:fatedier (原始作者)${C_RESET}"
+    echo -e "${C_WHITE}  frp版本：by:fatedier (frp作者)${C_RESET}"
     if [ -n "$shortcut_hint" ]; then
         echo -e "${C_HINT_TEXT}${shortcut_hint}${C_RESET}"
     fi
