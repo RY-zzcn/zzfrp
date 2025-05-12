@@ -6,7 +6,7 @@ set -e
 FRP_INSTALL_DIR="/usr/local/frp" # FRP 二进制文件和 frps 配置的基础目录
 FRPC_CLIENTS_DIR="${FRP_INSTALL_DIR}/clients" # frpc 实例配置目录
 FRP_ARCH="amd64" # 默认架构
-LATEST_FRP_VERSION="" # 将会获取
+FRP_VERSION_TO_INSTALL="" # 将由用户选择或自动确定要安装的版本
 ZZFRP_COMMAND_PATH="/usr/local/bin/zzfrp" # 快捷指令路径
 SHORTCUT_SETUP_FLAG_FILE="${FRP_INSTALL_DIR}/.zzfrp_shortcut_setup_done" # 标记文件，表示已尝试设置快捷方式
 SCRIPT_REPO_URL="https://github.com/RY-zzcn/zzfrp" # 脚本仓库地址
@@ -149,49 +149,80 @@ check_tools() {
   info "工具检查完成。"
 }
 
-
-get_latest_frp_version() {
-  if [ -z "$LATEST_FRP_VERSION" ]; then
-    info "正在获取最新的 FRP 版本号..."
-    LATEST_FRP_VERSION=$(curl -s https://api.github.com/repos/fatedier/frp/releases/latest | grep tag_name | cut -d '"' -f 4)
-    if [ -z "$LATEST_FRP_VERSION" ]; then
-      error "获取 FRP 最新版本失败。请检查网络或 GitHub API 状态。"
+# 修改此函数以允许用户选择版本
+determine_frp_version_to_install() {
+    info "正在获取 GitHub 上最新的 FRP 版本号..."
+    local latest_github_version
+    latest_github_version=$(curl -s https://api.github.com/repos/fatedier/frp/releases/latest | grep tag_name | cut -d '"' -f 4)
+    
+    if [ -z "$latest_github_version" ]; then
+      error "从 GitHub 获取 FRP 最新版本失败。请检查网络或 API 状态。"
     fi
-    info "最新的 FRP 版本是：${C_LIGHT_WHITE}${LATEST_FRP_VERSION}${C_RESET}"
-  fi
+    info "GitHub 上最新的 FRP 版本是：${C_LIGHT_WHITE}${latest_github_version}${C_RESET}"
+
+    echo -e "${C_MENU_PROMPT}请选择要安装的 FRP 版本:${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}1)${C_MENU_OPTION_TEXT} 安装最新版本 (${C_LIGHT_WHITE}${latest_github_version}${C_RESET}) ${C_HINT_TEXT}(默认)${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}2)${C_MENU_OPTION_TEXT} 安装自定义版本 (例如: v0.51.3)${C_RESET}"
+    echo -e "  ${C_MENU_OPTION_NUM}0)${C_MENU_OPTION_TEXT} 取消安装/更新${C_RESET}"
+    read -p "$(echo -e "${C_MENU_PROMPT}请输入选项 [0-2] (默认为 1): ${C_RESET}")" version_choice
+
+    case "$version_choice" in
+        2)
+            read -p "$(echo -e "${C_MENU_PROMPT}请输入您想安装的 FRP 版本号 (例如: ${C_INPUT_EXAMPLE}v0.51.3${C_MENU_PROMPT}) \n${C_HINT_TEXT}(请确保版本号存在于 ${C_UNDERLINE}${C_BLUE}https://github.com/fatedier/frp/releases${C_RESET}${C_HINT_TEXT})${C_MENU_PROMPT}: ${C_RESET}")" custom_version
+            if [[ ! "$custom_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.].*)?$ ]]; then # 简单格式校验
+                error "输入的版本号 '${C_BOLD}${custom_version}${C_RESET}' 格式不正确。应为 'vX.Y.Z' 格式。"
+            fi
+            FRP_VERSION_TO_INSTALL="$custom_version"
+            info "将尝试安装自定义版本: ${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET}"
+            ;;
+        0)
+            info "已取消安装/更新操作。"
+            return 1 # 返回失败码，以便调用函数知道中止
+            ;;
+        *) # 包括空输入或选项1
+            FRP_VERSION_TO_INSTALL="$latest_github_version"
+            info "将安装最新版本: ${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET}"
+            ;;
+    esac
+    return 0 # 返回成功码
 }
 
+
 download_and_extract_frp() {
-  local frp_version=$1
+  local frp_version_to_download=$1 # 使用传入的特定版本
   local arch=$2
   local binary_to_check=$3
 
-  echo -e "${C_MSG_ACTION_TEXT}⬇️ 正在下载 FRP 版本 ${C_BOLD}${frp_version}${C_RESET}${C_MSG_ACTION_TEXT} (架构 ${arch})...${C_RESET}"
+  echo -e "${C_MSG_ACTION_TEXT}⬇️ 正在下载 FRP 版本 ${C_BOLD}${frp_version_to_download}${C_RESET}${C_MSG_ACTION_TEXT} (架构 ${arch})...${C_RESET}"
   cd /tmp
-  local frp_file="frp_${frp_version#v}_linux_${arch}.tar.gz"
-  local download_url="https://github.com/fatedier/frp/releases/download/${frp_version}/${frp_file}"
+  local frp_file="frp_${frp_version_to_download#v}_linux_${arch}.tar.gz"
+  local download_url="https://github.com/fatedier/frp/releases/download/${frp_version_to_download}/${frp_file}"
 
-  wget -q --show-progress -O "${frp_file}" "${download_url}" || error "下载 FRP (${frp_file}) 失败。"
+  wget -q --show-progress -O "${frp_file}" "${download_url}"
+  if [ $? -ne 0 ]; then # 检查wget的退出状态
+      error "下载 FRP (${frp_file}) 失败。请检查版本号 '${C_BOLD}${frp_version_to_download}${C_RESET}' 是否存在，或网络连接。"
+  fi
+
 
   echo -e "${C_MSG_ACTION_TEXT}📦 正在解压 FRP...${C_RESET}"
-  rm -rf "frp_${frp_version#v}_linux_${arch}"
+  rm -rf "frp_${frp_version_to_download#v}_linux_${arch}"
   tar -xzf "${frp_file}" || { rm -f "${frp_file}"; error "解压 FRP 失败。"; }
-  cd "frp_${frp_version#v}_linux_${arch}"
+  cd "frp_${frp_version_to_download#v}_linux_${arch}"
 
   if [ ! -f "${binary_to_check}" ]; then
       error "下载的 FRP 存档中未找到预期的二进制文件 ${C_BOLD}${binary_to_check}${C_RESET}。"
-      cleanup_temp_files "$frp_version" "$arch"
+      cleanup_temp_files "$frp_version_to_download" "$arch" # 使用正确的版本号清理
       exit 1
   fi
 }
 
 cleanup_temp_files() {
-  local frp_version=$1
+  local frp_version_to_cleanup=$1 # 使用传入的特定版本
   local arch=$2
   echo -e "${C_MSG_ACTION_TEXT}🧹 清理临时文件...${C_RESET}"
   cd /tmp
-  rm -f "frp_${frp_version#v}_linux_${arch}.tar.gz"
-  rm -rf "frp_${frp_version#v}_linux_${arch}"
+  rm -f "frp_${frp_version_to_cleanup#v}_linux_${arch}.tar.gz"
+  rm -rf "frp_${frp_version_to_cleanup#v}_linux_${arch}"
 }
 
 _manage_service() {
@@ -201,7 +232,7 @@ _manage_service() {
     display_name=${display_name:-$service_name}
 
     case "$action" in
-        start|stop|restart|reload)
+        start|restart|reload) 
             echo -e "${C_MSG_ACTION_TEXT}正在 ${action} 服务 ${C_BOLD}${display_name}${C_RESET}${C_MSG_ACTION_TEXT}...${C_RESET}"
             if sudo systemctl "${action}" "${service_name}"; then
                 echo -e "${C_MSG_SUCCESS_TEXT}✅ 服务 ${C_BOLD}${display_name}${C_RESET}${C_MSG_SUCCESS_TEXT} ${action} 操作成功。${C_RESET}"
@@ -213,6 +244,36 @@ _manage_service() {
             else
                 warn "服务 ${C_BOLD}${display_name}${C_RESET} ${action} 操作失败。"
                 sudo systemctl status "${service_name}" --no-pager 
+            fi
+            ;;
+        stop)
+            echo -e "${C_MSG_ACTION_TEXT}正在停止服务 ${C_BOLD}${display_name}${C_RESET}${C_MSG_ACTION_TEXT}...${C_RESET}"
+            local stop_cmd_success=true
+            sudo systemctl stop "${service_name}" || stop_cmd_success=false
+
+            if ! $stop_cmd_success; then
+                warn "发送停止命令给服务 ${C_BOLD}${display_name}${C_RESET} 失败。"
+                sudo systemctl status "${service_name}" --no-pager 
+                return 1 
+            fi
+
+            echo -e "${C_MSG_SUCCESS_TEXT}✅ 服务 ${C_BOLD}${display_name}${C_RESET}${C_MSG_SUCCESS_TEXT} 停止命令已发送。${C_RESET}"
+            
+            local countdown=10 
+            echo -e "${C_MSG_ACTION_TEXT}等待服务 ${C_BOLD}${display_name}${C_RESET}${C_MSG_ACTION_TEXT} 完全停止...${C_RESET}"
+            while systemctl is-active --quiet "${service_name}" && [ "$countdown" -gt 0 ]; do
+                echo -e "${C_HINT_TEXT}  等待中... (${countdown}s)${C_RESET}"
+                sleep 1
+                countdown=$((countdown - 1))
+            done
+
+            if systemctl is-active --quiet "${service_name}"; then
+                warn "服务 ${C_BOLD}${display_name}${C_RESET} 在等待后仍处于活动状态。可能未能完全停止。"
+                sudo systemctl status "${service_name}" --no-pager
+                return 1 
+            else
+                info "服务 ${C_BOLD}${display_name}${C_RESET} 已成功停止。"
+                return 0 
             fi
             ;;
         status)
@@ -382,108 +443,73 @@ generate_random_token() {
 
 install_or_update_frps() {
   echo -e "${C_SUB_MENU_TITLE}--- 安装/更新 frps (服务端) ---${C_RESET}"
-  get_latest_frp_version
-  local latest_version_no_v="${LATEST_FRP_VERSION#v}" 
+  if ! determine_frp_version_to_install; then # 如果用户选择取消，则函数返回1
+    return # 中止安装/更新
+  fi
+  # FRP_VERSION_TO_INSTALL 现在包含了用户选择的版本
+  local version_to_install_no_v="${FRP_VERSION_TO_INSTALL#v}" 
   local force_reconfigure=false
+  local proceed_with_binary_install=true
 
   if [ -f "$FRPS_BINARY_PATH" ]; then 
     local local_version=$("$FRPS_BINARY_PATH" --version 2>/dev/null)
     if [ -n "$local_version" ]; then
       info "当前已安装 frps 版本: ${C_LIGHT_WHITE}${local_version}${C_RESET}"
-      if [ "$local_version" == "$latest_version_no_v" ]; then
-        info "您已安装最新版本的 frps (${C_LIGHT_WHITE}${local_version}${C_RESET})。"
+      if [ "$local_version" == "$version_to_install_no_v" ]; then # 与选定版本比较
+        info "您选择安装的版本 (${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET}) 已是当前安装版本。"
         read -p "$(echo -e "${C_MENU_PROMPT}是否仍要重新安装二进制文件? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
           info "取消重新安装二进制文件。"
-          if [ -f "$FRPS_CONFIG_FILE" ]; then
-            read -p "$(echo -e "${C_MENU_PROMPT}检测到现有配置，是否要重新配置frps (监听地址、端口、Dashboard、Token等)? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_existing_confirm
-            if [[ "$reconfigure_existing_confirm" =~ ^[Yy]$ ]]; then
-                force_reconfigure=true
-                sudo rm -f "$FRPS_CONFIG_FILE" 
-                info "将重新进行frps配置。"
-            else
-                info "保留现有配置。"
-                display_frps_connection_info 
-                return 
-            fi
-          fi
-        else 
-            if [ -f "$FRPS_CONFIG_FILE" ]; then
-                 read -p "$(echo -e "${C_MENU_PROMPT}检测到旧配置，是否同时重新配置frps (监听地址、端口、Dashboard、Token等)? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_on_reinstall_confirm
-                 if [[ "$reconfigure_on_reinstall_confirm" =~ ^[Yy]$ ]]; then
-                    force_reconfigure=true
-                    sudo rm -f "$FRPS_CONFIG_FILE" 
-                    info "将重新进行frps配置。"
-                 else
-                    info "保留现有配置，仅更新二进制文件。"
-                 fi
-            fi
+          proceed_with_binary_install=false
         fi
-      elif [[ "$local_version" > "$latest_version_no_v" ]]; then 
-        warn "当前安装版本 (${C_LIGHT_WHITE}${local_version}${C_RESET}) 高于 GitHub 最新版 (${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET})。可能使用了测试版或自定义版本。"
-        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用 GitHub 最新版覆盖安装二进制文件? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
+      elif [[ "$local_version" > "$version_to_install_no_v" ]]; then 
+        warn "当前安装版本 (${C_LIGHT_WHITE}${local_version}${C_RESET}) 高于您选择的版本 (${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET})。"
+        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用选定版本覆盖安装二进制文件? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
           info "取消覆盖安装。"
-          return
-        else 
-            if [ -f "$FRPS_CONFIG_FILE" ]; then
-                 read -p "$(echo -e "${C_MENU_PROMPT}检测到旧配置，是否同时重新配置frps? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_on_overwrite_confirm
-                 if [[ "$reconfigure_on_overwrite_confirm" =~ ^[Yy]$ ]]; then
-                    force_reconfigure=true
-                    sudo rm -f "$FRPS_CONFIG_FILE"
-                    info "将重新进行frps配置。"
-                 else
-                    info "保留现有配置，仅更新二进制文件。"
-                 fi
-            fi
+          proceed_with_binary_install=false
         fi
       else
-         info "检测到新版本 frps: ${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET} (当前: ${local_version})。准备更新..."
-         if [ -f "$FRPS_CONFIG_FILE" ]; then
-             read -p "$(echo -e "${C_MENU_PROMPT}检测到旧配置，是否同时重新配置frps? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_on_upgrade_confirm
-             if [[ "$reconfigure_on_upgrade_confirm" =~ ^[Yy]$ ]]; then
-                force_reconfigure=true
-                sudo rm -f "$FRPS_CONFIG_FILE"
-                info "将重新进行frps配置。"
-             else
-                info "保留现有配置，仅更新二进制文件。"
-             fi
-         fi
+         info "准备从版本 ${local_version} 更新到 ${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET}..."
       fi
     else
-      warn "无法获取当前 frps 版本信息，将尝试安装/更新。"
-      if [ -f "$FRPS_CONFIG_FILE" ]; then
-          read -p "$(echo -e "${C_MENU_PROMPT}检测到现有配置文件，是否要重新配置frps? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_unknown_ver_confirm
-          if [[ "$reconfigure_unknown_ver_confirm" =~ ^[Yy]$ ]]; then
-             force_reconfigure=true
-             sudo rm -f "$FRPS_CONFIG_FILE"
-             info "将重新进行frps配置。"
-          else
-             info "保留现有配置，仅更新二进制文件。"
-          fi
-      fi
+      warn "无法获取当前 frps 版本信息，将尝试安装/更新至 ${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET}。"
+    fi
+    
+    if [ -f "$FRPS_CONFIG_FILE" ]; then
+        read -p "$(echo -e "${C_MENU_PROMPT}检测到现有配置，是否要重新配置frps (监听地址、端口、Dashboard、Token等)? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reconfigure_confirm
+        if [[ "$reconfigure_confirm" =~ ^[Yy]$ ]]; then
+            force_reconfigure=true
+        else
+            info "保留现有配置。"
+        fi
+    fi
+    if ! $proceed_with_binary_install && ! $force_reconfigure; then
+        display_frps_connection_info
+        return
     fi
   fi 
 
-  if systemctl is-active --quiet "$FRPS_SERVICE_NAME"; then
-    info "检测到 frps 服务正在运行，正在尝试停止它以便更新..."
-    _manage_service "stop" "$FRPS_SERVICE_NAME" "frps"
-    sleep 2 
+  if $proceed_with_binary_install ; then
     if systemctl is-active --quiet "$FRPS_SERVICE_NAME"; then
-        warn "停止 frps 服务失败。更新可能会失败。如果遇到问题，请手动停止服务 (sudo systemctl stop ${FRPS_SERVICE_NAME}) 后重试。"
-    else
-        info "frps 服务已停止。"
+        info "检测到 frps 服务正在运行，正在尝试停止它以便更新二进制文件..."
+        if ! _manage_service "stop" "$FRPS_SERVICE_NAME" "frps"; then
+            error "无法停止正在运行的 frps 服务 (${FRPS_SERVICE_NAME})。请手动停止后重试。"
+        fi
     fi
+    download_and_extract_frp "$FRP_VERSION_TO_INSTALL" "$FRP_ARCH" "frps" 
+    echo -e "${C_MSG_ACTION_TEXT}⚙️ 正在安装 frps 到 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_MSG_ACTION_TEXT}...${C_RESET}"
+    sudo mkdir -p "$FRP_INSTALL_DIR"
+    sudo chmod +x "frps"
+    sudo cp "frps" "${FRPS_BINARY_PATH}"
+    cleanup_temp_files "$FRP_VERSION_TO_INSTALL" "$FRP_ARCH"
   fi
   
-  download_and_extract_frp "$LATEST_FRP_VERSION" "$FRP_ARCH" "frps" 
-
-  echo -e "${C_MSG_ACTION_TEXT}⚙️ 正在安装 frps 到 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_MSG_ACTION_TEXT}...${C_RESET}"
-  sudo mkdir -p "$FRP_INSTALL_DIR"
-  sudo chmod +x "frps"
-  sudo cp "frps" "${FRPS_BINARY_PATH}"
-  
   if [ ! -f "$FRPS_CONFIG_FILE" ] || $force_reconfigure ; then 
+    if $force_reconfigure && [ -f "$FRPS_CONFIG_FILE" ]; then
+        info "准备重新配置，将移除现有配置文件: ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_RESET}"
+        sudo rm -f "$FRPS_CONFIG_FILE"
+    fi
     echo -e "${C_MSG_ACTION_TEXT}📝 正在创建/重新配置 frps 配置文件 ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_MSG_ACTION_TEXT}...${C_RESET}"
     
     local frps_bind_addr frps_bind_port frps_dashboard_port frps_dashboard_user frps_dashboard_pwd frps_token_choice frps_token_value
@@ -538,8 +564,6 @@ EOF
   else
     info "保留现有 frps 配置文件: ${C_PATH_INFO}${FRPS_CONFIG_FILE}${C_RESET}。"
   fi
-
-  cleanup_temp_files "$LATEST_FRP_VERSION" "$FRP_ARCH"
 
   if [ ! -f "${FRPS_SYSTEMD_FILE}" ]; then
     echo -e "${C_MSG_ACTION_TEXT}🛠️ 正在创建 systemd 服务 ${C_BOLD}${FRPS_SERVICE_NAME}${C_MSG_ACTION_TEXT}...${C_RESET}"
@@ -657,68 +681,64 @@ FRPC_SYSTEMD_TEMPLATE_FILE="/etc/systemd/system/frpc@.service"
 
 install_or_update_frpc_binary() {
   echo -e "${C_SUB_MENU_TITLE}--- 安装/更新 frpc 客户端二进制文件 ---${C_RESET}"
-  get_latest_frp_version
-  local latest_version_no_v="${LATEST_FRP_VERSION#v}"
+  if ! determine_frp_version_to_install; then
+    return
+  fi
+  local version_to_install_no_v="${FRP_VERSION_TO_INSTALL#v}"
 
   if [ -f "$FRPC_BINARY_PATH" ]; then
     local local_version=$("$FRPC_BINARY_PATH" --version 2>/dev/null)
     if [ -n "$local_version" ]; then
       info "当前已安装 frpc 版本: ${C_LIGHT_WHITE}${local_version}${C_RESET}"
-      if [ "$local_version" == "$latest_version_no_v" ]; then
-        info "您已安装最新版本的 frpc (${C_LIGHT_WHITE}${local_version}${C_RESET})。"
+      if [ "$local_version" == "$version_to_install_no_v" ]; then
+        info "您选择安装的版本 (${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET}) 已是当前安装版本。"
         read -p "$(echo -e "${C_MENU_PROMPT}是否仍要重新安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
           info "取消重新安装。"
           return
         fi
-      elif [[ "$local_version" > "$latest_version_no_v" ]]; then
-        warn "当前安装版本 (${C_LIGHT_WHITE}${local_version}${C_RESET}) 高于 GitHub 最新版 (${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET})。可能使用了测试版或自定义版本。"
-        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用 GitHub 最新版覆盖安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
+      elif [[ "$local_version" > "$version_to_install_no_v" ]]; then
+        warn "当前安装版本 (${C_LIGHT_WHITE}${local_version}${C_RESET}) 高于您选择的版本 (${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET})。"
+        read -p "$(echo -e "${C_MENU_PROMPT}是否仍要用选定版本覆盖安装? [${C_CONFIRM_PROMPT}y/N${C_MENU_PROMPT}]: ${C_RESET}")" reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
           info "取消覆盖安装。"
           return
         fi
       else
-        info "检测到新版本 frpc: ${C_LIGHT_WHITE}${latest_version_no_v}${C_RESET} (当前: ${local_version})。准备更新..."
+        info "准备从版本 ${local_version} 更新到 ${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET}..."
       fi
     else
-      warn "无法获取当前 frpc 版本信息，将尝试更新。"
+      warn "无法获取当前 frpc 版本信息，将尝试安装/更新至 ${C_LIGHT_WHITE}${FRP_VERSION_TO_INSTALL}${C_RESET}。"
     fi
   fi
 
   if [ -d "$FRPC_CLIENTS_DIR" ] && [ -n "$(ls -A ${FRPC_CLIENTS_DIR}/*.ini 2>/dev/null)" ]; then
     info "检测到 frpc 实例配置，正在尝试停止相关服务以便更新 frpc 二进制文件..."
-    local instance_stopped_count=0
-    local instance_total_count=$(ls -1qA ${FRPC_CLIENTS_DIR}/*.ini 2>/dev/null | wc -l)
+    local all_stopped_successfully=true
     for conf_file_loop in ${FRPC_CLIENTS_DIR}/*.ini; do
         local instance_name_loop=$(basename "$conf_file_loop" .ini)
         local service_name_loop="frpc@${instance_name_loop}.service"
         if systemctl is-active --quiet "$service_name_loop"; then
-            _manage_service "stop" "$service_name_loop" "frpc 实例 [${instance_name_loop}]"
-            if ! systemctl is-active --quiet "$service_name_loop"; then
-                instance_stopped_count=$((instance_stopped_count + 1))
+            if ! _manage_service "stop" "$service_name_loop" "frpc 实例 [${instance_name_loop}]"; then
+                all_stopped_successfully=false
             fi
-        else
-            instance_stopped_count=$((instance_stopped_count + 1)) 
         fi
     done
-    if [ "$instance_stopped_count" -lt "$instance_total_count" ]; then
-        warn "并非所有 frpc 实例服务都已成功停止。更新 frpc 二进制文件可能会失败或导致问题。"
-        warn "如果遇到问题，请手动停止所有 frpc@<instance_name>.service 服务后重试。"
+    if ! $all_stopped_successfully ; then
+        error "并非所有活动的 frpc 实例都已成功停止。请手动检查并停止相关服务后重试。"
     else
         info "所有检测到的 frpc 实例服务已停止或处于非活动状态。"
     fi
-    sleep 1 
   fi
   
-  download_and_extract_frp "$LATEST_FRP_VERSION" "$FRP_ARCH" "frpc"
+  download_and_extract_frp "$FRP_VERSION_TO_INSTALL" "$FRP_ARCH" "frpc"
 
   echo -e "${C_MSG_ACTION_TEXT}⚙️ 正在安装 frpc 二进制文件到 ${C_PATH_INFO}${FRP_INSTALL_DIR}${C_MSG_ACTION_TEXT}...${C_RESET}"
   sudo mkdir -p "$FRP_INSTALL_DIR"
   sudo chmod +x "frpc"
   sudo cp "frpc" "${FRPC_BINARY_PATH}"
   
-  cleanup_temp_files "$LATEST_FRP_VERSION" "$FRP_ARCH"
+  cleanup_temp_files "$FRP_VERSION_TO_INSTALL" "$FRP_ARCH"
   
   if [ -f "${FRPC_BINARY_PATH}" ]; then
     echo -e "${C_MSG_SUCCESS_TEXT}✅ frpc 二进制文件已成功安装到 ${C_PATH_INFO}${FRPC_BINARY_PATH}${C_RESET}"
@@ -1204,7 +1224,7 @@ main_menu() {
   while true; do
     clear
     echo -e "${C_MAIN_TITLE}\n========== zzfrp 管理脚本 by:RY-zzcn ==========${C_RESET}" 
-    echo -e "${C_WHITE}  frp版本：by:fatedier (frp作者)${C_RESET}"
+    echo -e "${C_WHITE}  frp版本：by:fatedier ${C_RESET}"
     if [ -n "$shortcut_hint" ]; then
         echo -e "${C_HINT_TEXT}${shortcut_hint}${C_RESET}"
     fi
